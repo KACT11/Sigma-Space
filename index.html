@@ -185,13 +185,7 @@
           </div>
           <h3>Мобы</h3>
           <div id="mobTypes"></div>
-          <div class="row"><input id="newMob" placeholder="Новый моб"><button id="addMob" type="button">+</button></div>
-          <h3>Жизнь — здоровье</h3>
-          <div id="lifeHpTypes"></div>
-          <div class="row">
-            <input id="newLifeHpType" placeholder="Например, 250к хп">
-            <button id="addLifeHpType" type="button">+</button>
-          </div>
+          <div class="row"><input id="newMob" placeholder="Например, Мобы 40к"><button id="addMob" type="button">+</button></div>
         </div>
       </div>
 
@@ -240,7 +234,7 @@
         <h3>Состояние сохранения</h3>
         <div class="persistenceRow"><span>Сохранение:</span><b id="saveStatus">—</b></div>
         <div class="persistenceRow"><span>Резервная копия:</span><b id="backupStatus">—</b></div>
-        <div class="persistenceRow"><span>Версия данных:</span><b id="dataVersionStatus">v3</b></div>
+        <div class="persistenceRow"><span>Версия данных:</span><b id="dataVersionStatus">v7</b></div>
       </div>
     </aside>
   </main>
@@ -261,11 +255,43 @@
           </select></label>
         </div>
         <div class="hint privacyDescription">Режим публикации маскирует данные только в интерфейсе. Сама карта и сохранённые данные не изменяются.</div>
+        <div class="diagnosticCard">
+          <div class="diagnosticHeader"><div><b>Диагностика SigmaSpace</b><div class="hint">Проверяет основные узлы приложения без изменения карты и пользовательских данных.</div></div><button id="runDiagnosticsBtn" type="button">Проверить приложение</button></div>
+          <div id="diagnosticSummary" class="diagnosticSummary">Проверка ещё не запускалась.</div>
+          <div id="diagnosticResults" class="diagnosticResults" aria-live="polite"></div>
+          <button id="copyDiagnosticsBtn" type="button" class="diagnosticCopy" disabled>Скопировать отчёт</button>
+        </div>
       </div>
     </div>
   </div>
   <div id="toast" class="toast"></div>
 </div>
+<script>
+// Settings fallback: keep the dialog accessible even if another startup routine fails.
+(()=>{
+  const bind=()=>{
+    const btn=document.querySelector("#settingsBtn"),modal=document.querySelector("#settingsModal"),closeBtn=document.querySelector("#settingsCloseBtn");
+    if(!btn||!modal)return;
+    const open=()=>{modal.classList.add("open");modal.setAttribute("aria-hidden","false")};
+    const close=()=>{modal.classList.remove("open");modal.setAttribute("aria-hidden","true")};
+    if(!btn.dataset.settingsFallbackBound){btn.addEventListener("click",open);btn.dataset.settingsFallbackBound="1"}
+    if(closeBtn&&!closeBtn.dataset.settingsFallbackBound){closeBtn.addEventListener("click",close);closeBtn.dataset.settingsFallbackBound="1"}
+    if(!modal.dataset.settingsFallbackBound){modal.addEventListener("click",e=>{if(e.target===modal)close()});modal.dataset.settingsFallbackBound="1"}
+    if(!window.__sigmaSettingsEscapeBound){window.addEventListener("keydown",e=>{if(e.key==="Escape"&&modal.classList.contains("open"))close()});window.__sigmaSettingsEscapeBound=true}
+  };
+  bind();
+  document.addEventListener("DOMContentLoaded",bind,{once:true});
+})();
+</script>
 <script src="app.js"></script>
+<script>
+// Last-resort settings binder. If another startup routine aborts before the
+// normal startup tail, retry the settings binding without touching map data.
+(()=>{
+  const retry=()=>{try{if(typeof setupSettings==="function")setupSettings()}catch(e){}};
+  retry();
+  setTimeout(retry,0);setTimeout(retry,100);setTimeout(retry,500);
+})();
+</script>
 </body>
 </html>

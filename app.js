@@ -1,13 +1,16 @@
 const APP_NAME="SigmaSpace";
 const DB="STAR_MAP_MVP5";
-const DATA_VERSION=6;
+const DATA_VERSION=7;
 const BACKUP_DB="STAR_MAP_BACKUP_V1";
 const $=s=>document.querySelector(s);
+const diagnosticRuntimeErrors=[];
+function recordDiagnosticError(type,error){try{const message=error?.stack||error?.message||String(error);diagnosticRuntimeErrors.push({type,message:String(message).slice(0,1200),time:new Date().toISOString()});if(diagnosticRuntimeErrors.length>20)diagnosticRuntimeErrors.shift()}catch(e){}}
+window.addEventListener("error",e=>recordDiagnosticError("error",e.error||{message:e.message,filename:e.filename,lineno:e.lineno,colno:e.colno}));
+window.addEventListener("unhandledrejection",e=>recordDiagnosticError("unhandledrejection",e.reason));
 const canvas=$("#map"),ctx=canvas.getContext("2d");
 
 const DEFAULT_PLANET_TYPES=["Земная","Джунгли","Вулканическая","Кислотная","Каменистая"];
 const DEFAULT_RESOURCE_TYPES=["Уголь","Железная руда","Медная руда","Нитрокалит","Свинцовая руда","Титановая руда","Урановая руда","Сера","Серебрянная руда","Золотая руда","Соль","Кобальт","Вольфрам","Платина","Омикрониум","Ксириум","Плутоний","Фаунитрон","Протонит","Иридий","Электрониум","Эпсилон-металл","Вулканит"];
-const DEFAULT_LIFE_HP_TYPES=[...Array.from({length:10},(_,i)=>`${(i+1)*10}к хп`),...Array.from({length:5},(_,i)=>`${120+i*20}к хп`)];
 const STAR_TYPES=[
   ["red","Красная"],["orange","Оранжевая"],["yellow","Жёлтая"],["white","Белая"],["blue","Синяя"]
 ];
@@ -16,7 +19,7 @@ const GALAXY_RADIUS=350;
 const DEFAULT_SCAN_RADIUS=18000;
 const DEFAULT_STAR_RADIUS=3000;
 
-let state={objects:[],planetTypes:[...DEFAULT_PLANET_TYPES],resourceTypes:[...DEFAULT_RESOURCE_TYPES],lifeHpTypes:[...DEFAULT_LIFE_HP_TYPES],mobTypes:[],settings:{scanDisplay:"radius",importDisplay:"show",exportFavorites:"show",privacyMode:"none",starRadius:DEFAULT_STAR_RADIUS,scanRadius:DEFAULT_SCAN_RADIUS},meta:{dataVersion:DATA_VERSION,updatedAt:0}};
+let state={objects:[],planetTypes:[...DEFAULT_PLANET_TYPES],resourceTypes:[...DEFAULT_RESOURCE_TYPES],mobTypes:[],settings:{scanDisplay:"radius",importDisplay:"show",exportFavorites:"show",privacyMode:"none",starRadius:DEFAULT_STAR_RADIUS,scanRadius:DEFAULT_SCAN_RADIUS},meta:{dataVersion:DATA_VERSION,updatedAt:0}};
 let persistenceDBPromise=null,persistenceQueue=Promise.resolve(),backupTimer=null,backupDirHandle=null,backupWriting=false,backupQueued=false;
 let layer="clusters",starId=null,clusterId=null,selected=null,adding=false;
 let rulerMode=false,rulerPoints=[];
@@ -63,9 +66,13 @@ function markerVisible(o){
 function isBodyKind(k){return ["planet","moon","asteroid"].includes(k)}
 function roundSizeUp8(v){const n=Number(v);if(!Number.isFinite(n)||n<=0)return "";return String(Math.ceil(n/8)*8)}
 function normalizeLifeValue(life){
-  if(Array.isArray(life))return life.map(x=>({aggressive:!!x?.aggressive,hp:String(x?.hp||"")})).filter(x=>x.aggressive||x.hp);
-  if(life&&typeof life==="object"&&(life.aggressive||life.hp))return [{aggressive:!!life.aggressive,hp:String(life.hp||"")}];
+  if(Array.isArray(life))return life.map(x=>({aggressive:!!x?.aggressive,mob:String(x?.mob||x?.hp||"").trim()})).filter(x=>x.mob);
+  if(life&&typeof life==="object"&&(life.aggressive||life.mob||life.hp))return [{aggressive:!!life.aggressive,mob:String(life.mob||life.hp||"").trim()}].filter(x=>x.mob);
   return [];
+}
+function uniqLife(items){
+  const seen=new Set();
+  return (items||[]).filter(x=>x&&x.mob).map(x=>({aggressive:!!x.aggressive,mob:String(x.mob)})).filter(x=>{const k=x.mob+"\u0000"+(x.aggressive?1:0);if(seen.has(k))return false;seen.add(k);return true});
 }
 function getLife(o){return normalizeLifeValue(o?.life)}
 function isSystemObject(o,sid){return !!o&&(o.starId===sid||(o.kind==="marker"&&o.markerLayer==="system"&&o.starId===sid))}
@@ -89,202 +96,49 @@ function normalizeScanNumbers(){
     }
   }
 }
-
 function uid(){return(crypto.randomUUID?crypto.randomUUID():Date.now()+"-"+Math.random()).toString()}
 function esc(v){return String(v??"").replace(/[&<>\"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]))}
 function snapshotState(){return JSON.stringify(state)}
-function updateBackupStatus(text,error=false){
-  const el=$("#backupStatus");if(!el)return;
-  el.textContent=text;el.classList.toggle("backupError",!!error);
-}
-function updateSaveStatus(text,error=false){
-  const el=$("#saveStatus");if(!el)return;
-  el.textContent=text;el.classList.toggle("backupError",!!error);
-}
-function updateDataVersionStatus(){
-  const el=$("#dataVersionStatus");if(el)el.textContent=`v${DATA_VERSION}`;
-}
+function updateBackupStatus(text,error=false){const el=$("#backupStatus");if(!el)return;el.textContent=text;el.classList.toggle("backupError",!!error)}
+function updateSaveStatus(text,error=false){const el=$("#saveStatus");if(!el)return;el.textContent=text;el.classList.toggle("backupError",!!error)}
+function updateDataVersionStatus(){const el=$("#dataVersionStatus");if(el)el.textContent=`v${DATA_VERSION}`}
 function openPersistenceDB(){
   if(!("indexedDB"in window))return Promise.resolve(null);
   if(persistenceDBPromise)return persistenceDBPromise;
   persistenceDBPromise=new Promise(resolve=>{
     const req=indexedDB.open(BACKUP_DB,1);
     req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains("data"))db.createObjectStore("data");if(!db.objectStoreNames.contains("config"))db.createObjectStore("config")};
-    req.onsuccess=()=>resolve(req.result);
-    req.onerror=()=>resolve(null);
+    req.onsuccess=()=>resolve(req.result);req.onerror=()=>resolve(null);
   });
   return persistenceDBPromise;
 }
-function idbGet(store,key){
-  return openPersistenceDB().then(db=>new Promise(resolve=>{
-    if(!db)return resolve(null);
-    const tx=db.transaction(store,"readonly"),req=tx.objectStore(store).get(key);
-    req.onsuccess=()=>resolve(req.result??null);req.onerror=()=>resolve(null);
-  }));
-}
-function idbPut(store,key,value){
-  return openPersistenceDB().then(db=>new Promise(resolve=>{
-    if(!db)return resolve(false);
-    const tx=db.transaction(store,"readwrite");tx.objectStore(store).put(value,key);
-    tx.oncomplete=()=>resolve(true);tx.onerror=()=>resolve(false);tx.onabort=()=>resolve(false);
-  }));
-}
-function queueIndexedSave(serialized,savedAt){
-  persistenceQueue=persistenceQueue.then(()=>idbPut("data","latest",{savedAt,state:serialized})).catch(()=>false);
-}
+function idbGet(store,key){return openPersistenceDB().then(db=>new Promise(resolve=>{if(!db)return resolve(null);const tx=db.transaction(store,"readonly"),req=tx.objectStore(store).get(key);req.onsuccess=()=>resolve(req.result??null);req.onerror=()=>resolve(null)}))}
+function idbPut(store,key,value){return openPersistenceDB().then(db=>new Promise(resolve=>{if(!db)return resolve(false);const tx=db.transaction(store,"readwrite");tx.objectStore(store).put(value,key);tx.oncomplete=()=>resolve(true);tx.onerror=()=>resolve(false);tx.onabort=()=>resolve(false)}))}
+function queueIndexedSave(serialized,savedAt){persistenceQueue=persistenceQueue.then(()=>idbPut("data","latest",{savedAt,state:serialized})).catch(()=>false)}
 function save(){
-  state.meta=state.meta&&typeof state.meta==="object"?state.meta:{};
-  state.meta.dataVersion=DATA_VERSION;
-  state.meta.updatedAt=Date.now();
-  const serialized=snapshotState(),savedAt=state.meta.updatedAt;
-  let localOk=true;
+  state.meta=state.meta&&typeof state.meta==="object"?state.meta:{};state.meta.dataVersion=DATA_VERSION;state.meta.updatedAt=Date.now();
+  const serialized=snapshotState(),savedAt=state.meta.updatedAt;let localOk=true;
   try{localStorage.setItem(DB,serialized)}catch(e){localOk=false}
-  queueIndexedSave(serialized,savedAt);
-  scheduleExternalBackup();
+  queueIndexedSave(serialized,savedAt);scheduleExternalBackup();
   const saveTime=new Date(savedAt).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
-  updateSaveStatus(localOk?`Сохранено ${saveTime}`:"Ошибка localStorage",!localOk);
-  updateBackupStatus(backupDirHandle?"Подключён": "Не подключён");
-  updateDataVersionStatus();
+  updateSaveStatus(localOk?`Сохранено ${saveTime}`:"Ошибка localStorage",!localOk);updateBackupStatus(backupDirHandle?"Подключён":"Не подключён");updateDataVersionStatus();
 }
-function makeBackupPayload(){
-  return {
-    format:"STAR_MAP",
-    version:12,
-    dataVersion:DATA_VERSION,
-    backup:true,
-    exportedAt:new Date().toISOString(),
-    planetTypes:[...state.planetTypes],
-    resourceTypes:[...state.resourceTypes],
-    lifeHpTypes:[...state.lifeHpTypes],
-    mobTypes:[...state.mobTypes],
-    settings:{...state.settings},
-    objects:state.objects.map(o=>({...o}))
-  };
-}
+function makeBackupPayload(){return{format:"STAR_MAP",version:12,dataVersion:DATA_VERSION,backup:true,exportedAt:new Date().toISOString(),planetTypes:[...state.planetTypes],resourceTypes:[...state.resourceTypes],mobTypes:[...state.mobTypes],settings:{...state.settings},objects:state.objects.map(o=>({...o}) )}}
 function backupText(){return JSON.stringify(makeBackupPayload(),null,2)}
-function scheduleExternalBackup(){
-  if(!backupDirHandle)return;
-  clearTimeout(backupTimer);
-  backupTimer=setTimeout(()=>performExternalBackup(),1000);
-}
-async function hasBackupPermission(handle,request=false){
-  try{
-    const p=await handle.queryPermission({mode:"readwrite"});
-    if(p==="granted")return true;
-    if(!request)return false;
-    return (await handle.requestPermission({mode:"readwrite"}))==="granted";
-  }catch(e){return false}
-}
-async function writeBackupFile(name,text){
-  const file=await backupDirHandle.getFileHandle(name,{create:true});
-  const writable=await file.createWritable();
-  await writable.write(text);
-  await writable.close();
-}
-async function performExternalBackup(){
-  if(!backupDirHandle)return;
-  if(backupWriting){backupQueued=true;return}
-  backupWriting=true;
-  try{
-    if(!await hasBackupPermission(backupDirHandle,true)){backupDirHandle=null;await idbPut("config","backupDirectory",null);updateBackupStatus("Доступ к папке отозван — автобэкап остановлен",true);return}
-    const text=backupText();
-    const slot=Number(await idbGet("config","backupSlot")||0);
-    const next=slot?0:1;
-    await writeBackupFile(next?"sigmaspace-autobackup-A.starmap":"sigmaspace-autobackup-B.starmap",text);
-    await idbPut("config","backupSlot",next);
-    await writeBackupFile("sigmaspace-autobackup-latest.starmap",text);
-    updateBackupStatus("Автобэкап: "+new Date().toLocaleTimeString("ru-RU"));
-  }catch(e){
-    updateBackupStatus("Ошибка внешнего автобэкапа — сделайте копию вручную",true);
-  }finally{
-    backupWriting=false;
-    if(backupQueued){backupQueued=false;scheduleExternalBackup()}
-  }
-}
-async function selectBackupFolder(){
-  if(!window.showDirectoryPicker){updateBackupStatus("Этот браузер не поддерживает автобэкап в папку",true);return}
-  try{
-    const handle=await window.showDirectoryPicker({mode:"readwrite"});
-    if(!await hasBackupPermission(handle,true))return;
-    backupDirHandle=handle;
-    await idbPut("config","backupDirectory",handle);
-    updateBackupStatus("Автобэкап подключён");
-    await performExternalBackup();
-  }catch(e){
-    if(e?.name!=="AbortError")updateBackupStatus("Не удалось подключить папку",true);
-  }
-}
-async function restoreBackupDirectory(){
-  const handle=await idbGet("config","backupDirectory");
-  if(!handle)return;
-  backupDirHandle=handle;
-  if(await hasBackupPermission(handle,false)){updateBackupStatus("Автобэкап подключён");scheduleExternalBackup()}
-  else{backupDirHandle=null;updateBackupStatus("Папка автобэкапа требует повторного выбора",true)}
-}
-async function hydrateFromIndexedDB(){
-  const rec=await idbGet("data","latest");
-  const localStamp=Number(state.meta?.updatedAt||0),indexedStamp=Number(rec?.savedAt||0);
-  if(rec?.state){
-    try{
-      const indexed=JSON.parse(rec.state);
-      if(indexedStamp>localStamp){
-        state=indexed;normalizeLoadedState();ensureGalaxies();ensureDeepClusters();
-        selected=selected?.id?state.objects.find(o=>o.id===selected.id)||null:null;
-        refreshTypeLists();refreshCreationFields();refreshMigrationControls();renderFilters();render();
-        updateBackupStatus(backupDirHandle?"Автобэкап подключён":"Восстановлено из резервной копии браузера");
-      }else if(localStamp>indexedStamp){queueIndexedSave(snapshotState(),localStamp)}
-    }catch(e){}
-  }else{
-    const stamp=localStamp||Date.now();
-    state.meta.updatedAt=stamp;
-    const serialized=snapshotState();
-    try{localStorage.setItem(DB,serialized)}catch(e){}
-    queueIndexedSave(serialized,stamp);
-  }
-}
+function scheduleExternalBackup(){if(!backupDirHandle)return;clearTimeout(backupTimer);backupTimer=setTimeout(()=>performExternalBackup(),1000)}
+async function hasBackupPermission(handle,request=false){try{const p=await handle.queryPermission({mode:"readwrite"});if(p==="granted")return true;if(!request)return false;return(await handle.requestPermission({mode:"readwrite"}))==="granted"}catch(e){return false}}
+async function writeBackupFile(name,text){const file=await backupDirHandle.getFileHandle(name,{create:true});const w=await file.createWritable();await w.write(text);await w.close()}
+async function performExternalBackup(){if(!backupDirHandle||backupWriting)return;if(!(await hasBackupPermission(backupDirHandle)))return;backupWriting=true;try{await writeBackupFile("SigmaSpace-backup.starmap",backupText());updateBackupStatus("Резервная копия сохранена")}catch(e){updateBackupStatus("Ошибка резервной копии",true)}finally{backupWriting=false}}
+async function selectBackupFolder(){if(!window.showDirectoryPicker){toast("Выбор папки резервной копии не поддерживается этим браузером.");return}try{backupDirHandle=await window.showDirectoryPicker({mode:"readwrite"});if(await hasBackupPermission(backupDirHandle,true)){await idbPut("config","backupDir",backupDirHandle);await performExternalBackup();toast("Папка резервной копии подключена.")}else{backupDirHandle=null;toast("Доступ к папке не предоставлен.")}}catch(e){toast("Выбор папки отменён.")}}
+async function restoreBackupDirectory(){try{const h=await idbGet("config","backupDir");if(h&&typeof h.getFileHandle==="function"){backupDirHandle=h;updateBackupStatus("Подключён")}}catch(e){}}
+async function hydrateFromIndexedDB(){try{const rec=await idbGet("data","latest");if(!rec?.state)return;const localTime=Number(state.meta?.updatedAt)||0;if(Number(rec.savedAt)>localTime){const loaded=migrateData(JSON.parse(rec.state));if(loaded&&Array.isArray(loaded.objects)){state=loaded;normalizeLoadedState();save();refreshTypeLists();refreshCreationFields();refreshMigrationControls();renderFilters();render();toast("Восстановлена более свежая локальная копия.")}}}catch(e){}}
 function cloneState(){return JSON.parse(JSON.stringify(state))}
-function checkpoint(){
-  undoStack.push({state:cloneState(),layer,starId,clusterId,selectedId:selected?.id||null,view:{...view}});
-  if(undoStack.length>UNDO_LIMIT)undoStack.shift();
-  updateUndoButton();
-}
-function updateUndoButton(){
-  const b=$("#undoBtn");if(b)b.disabled=!undoStack.length;
-}
-function undo(){
-  const snap=undoStack.pop();if(!snap){toast("Отменять больше нечего");return}
-  state=snap.state;layer=snap.layer;starId=snap.starId;clusterId=snap.clusterId;view={...snap.view};
-  selected=snap.selectedId?state.objects.find(o=>o.id===snap.selectedId)||null:null;
-  normalizeScanNumbers();ensureGalaxies();ensureDeepClusters();save();
-  if(selected)show(selected);else show(null);
-  refreshTypeLists();refreshCreationFields();refreshMigrationControls();renderFilters();render();
-  updateUndoButton();toast("Последнее изменение отменено");
-}
+function checkpoint(){undoStack.push({state:cloneState(),layer,starId,clusterId,selectedId:selected?.id||null,view:{...view}});if(undoStack.length>UNDO_LIMIT)undoStack.shift();updateUndoButton()}
+function updateUndoButton(){const b=$("#undoBtn");if(b)b.disabled=!undoStack.length}
+function undo(){const snap=undoStack.pop();if(!snap){toast("Отменять больше нечего");return}state=snap.state;layer=snap.layer;starId=snap.starId;clusterId=snap.clusterId;view={...snap.view};selected=snap.selectedId?state.objects.find(o=>o.id===snap.selectedId)||null:null;normalizeScanNumbers();ensureGalaxies();ensureDeepClusters();save();if(selected)show(selected);else show(null);refreshTypeLists();refreshCreationFields();refreshMigrationControls();renderFilters();render();updateUndoButton();toast("Последнее изменение отменено")}
 function uniqStrings(a){return[...new Set((Array.isArray(a)?a:[]).map(String).map(x=>x.trim()).filter(Boolean))]}
 function mobKey(v){return String(v??"").trim().replace(/\s+/g," ").toLocaleLowerCase("ru-RU")}
-function chooseMobLabel(a,b){
-  const aa=String(a||""),bb=String(b||"");
-  if(!aa)return bb;if(!bb)return aa;if(aa===bb)return aa;
-  if(/^[а-яё]/.test(aa)&&/^[А-ЯЁ]/.test(bb))return bb;
-  return aa;
-}
-function normalizeMobDictionary(){
-  const map=new Map(),order=[];
-  for(const raw of Array.isArray(state.mobTypes)?state.mobTypes:[]){
-    const clean=String(raw??"").trim().replace(/\s+/g," ");if(!clean)continue;
-    const key=mobKey(clean);
-    if(!map.has(key)){map.set(key,clean);order.push(key)}else map.set(key,chooseMobLabel(map.get(key),clean));
-  }
-  const aliases=new Map();
-  for(const raw of Array.isArray(state.mobTypes)?state.mobTypes:[]){
-    const clean=String(raw??"").trim().replace(/\s+/g," ");if(clean)aliases.set(clean,map.get(mobKey(clean)));
-  }
-  for(const o of state.objects){
-    if(!Array.isArray(o.mobs))continue;
-    o.mobs=uniqStrings(o.mobs.map(m=>aliases.get(String(m).trim().replace(/\s+/g," "))||map.get(mobKey(m))||String(m).trim().replace(/\s+/g," ")));
-  }
-  state.mobTypes=order.map(k=>map.get(k));
-}
+function chooseMobLabel(a,b){const aa=String(a||""),bb=String(b||"");if(!aa)return bb;if(!bb)return aa;if(aa===bb)return aa;if(/^[а-яё]/.test(aa)&&/^[А-ЯЁ]/.test(bb))return bb;return aa}
 function fmt(v){const n=Math.round(v);return(n<0?"−":"+")+Math.abs(n).toLocaleString("ru-RU")}
 function cleanCoord(v){return Math.round(Number(v))}
 function dist2(a,b){const dx=a.x-b.x,dy=a.y-b.y;return dx*dx+dy*dy}
@@ -311,44 +165,23 @@ function importedLabel(o){return o.imported?`<span class="importMark">(!)</span>
 function readableName(o){return `${o.imported?"(!) ":""}${namedLabel(o)}`}
 
 function normalizeLoadedState(){
-  state.objects=Array.isArray(state.objects)?state.objects:[];
-  ensureSettings();
+  state.objects=Array.isArray(state.objects)?state.objects:[];ensureSettings();
   state.planetTypes=uniqStrings([...(Array.isArray(state.planetTypes)?state.planetTypes:[]),...DEFAULT_PLANET_TYPES]);
   state.resourceTypes=uniqStrings([...(Array.isArray(state.resourceTypes)?state.resourceTypes:[]),...DEFAULT_RESOURCE_TYPES]);
-  state.lifeHpTypes=uniqStrings([...(Array.isArray(state.lifeHpTypes)?state.lifeHpTypes:[]),...DEFAULT_LIFE_HP_TYPES]);
   state.mobTypes=uniqStrings(Array.isArray(state.mobTypes)?state.mobTypes:[]);
-  if(!state.planetTypes.length)state.planetTypes=[...DEFAULT_PLANET_TYPES];
-  if(!state.resourceTypes.length)state.resourceTypes=[...DEFAULT_RESOURCE_TYPES];
-  if(!state.lifeHpTypes.length)state.lifeHpTypes=[...DEFAULT_LIFE_HP_TYPES];
-  state.meta=state.meta&&typeof state.meta==="object"?state.meta:{};
-  state.meta.dataVersion=DATA_VERSION;
-  state.meta.updatedAt=Number(state.meta.updatedAt)||0;
+  if(!state.planetTypes.length)state.planetTypes=[...DEFAULT_PLANET_TYPES];if(!state.resourceTypes.length)state.resourceTypes=[...DEFAULT_RESOURCE_TYPES];
+  state.meta=state.meta&&typeof state.meta==="object"?state.meta:{};state.meta.dataVersion=DATA_VERSION;state.meta.updatedAt=Number(state.meta.updatedAt)||0;
   for(const o of state.objects){
     o.favorite=!!o.favorite;o.imported=!!o.imported;o.manualBinding=!!o.manualBinding;if(o.kind==="star"){const hadGalaxyBinding=Object.prototype.hasOwnProperty.call(o,"galaxyManualBinding");o.galaxyManualBinding=hadGalaxyBinding?!!o.galaxyManualBinding:!!o.galaxyId}
-    if(o.kind==="marker"){
-      if(!o.markerLayer)o.markerLayer=o.starId?"system":"clusters";
-      if(o.markerLayer==="system"&&!o.starId)o.markerLayer="clusters";
-    }
+    if(o.kind==="marker"){if(!o.markerLayer)o.markerLayer=o.starId?"system":"clusters";if(o.markerLayer==="system"&&!o.starId)o.markerLayer="clusters"}
     if(o.kind==="scan")o.radius=scanRadius();
     if(isBodyKind(o.kind)){
-      o.resources=uniqStrings(o.resources);o.mobs=uniqStrings(o.mobs);
-      if(o.kind!=="asteroid"){
-        o.isMoon=o.kind==="moon";
-        if(!String(o.planetType||"").trim())o.planetType=state.planetTypes[0]||"";
-        if(o.planetType&&!state.planetTypes.includes(o.planetType))state.planetTypes.push(o.planetType);
-      }
-      o.size=roundSizeUp8(o.size);
-      o.life=normalizeLifeValue(o.life);
-      for(const life of o.life)if(life.hp&&!state.lifeHpTypes.includes(life.hp))state.lifeHpTypes.push(life.hp);
-      if(!o.life.length)delete o.life;
-      for(const r of o.resources)if(!state.resourceTypes.includes(r))state.resourceTypes.push(r);
-      for(const m of o.mobs)if(!state.mobTypes.includes(m))state.mobTypes.push(m);
+      o.resources=uniqStrings(o.resources);if(o.kind!=="asteroid"){o.isMoon=o.kind==="moon";if(!String(o.planetType||"").trim())o.planetType=state.planetTypes[0]||"";if(o.planetType&&!state.planetTypes.includes(o.planetType))state.planetTypes.push(o.planetType)}
+      o.size=roundSizeUp8(o.size);o.life=uniqLife(normalizeLifeValue(o.life).concat(Array.isArray(o.mobs)?o.mobs.map(m=>({mob:m,aggressive:false})):[]));delete o.mobs;if(!o.life.length)delete o.life;
+      for(const life of o.life)if(life.mob&&!state.mobTypes.includes(life.mob))state.mobTypes.push(life.mob);for(const r of o.resources)if(!state.resourceTypes.includes(r))state.resourceTypes.push(r);
     }
   }
-  normalizeMobDictionary();
-  normalizeScanNumbers();
-  migrateOldSystemClusters();
-  normalizeAsteroidParents();
+  normalizeScanNumbers();migrateOldSystemClusters();normalizeAsteroidParents();
 }
 function normalizeAsteroidParents(sid=null){
   for(const a of state.objects.filter(o=>o.kind==="asteroid"&&(!sid||o.starId===sid))){
@@ -374,7 +207,7 @@ function migrateData(raw){
     v=3;
   }
   if(v<4){
-    s.lifeHpTypes=uniqStrings([...(Array.isArray(s.lifeHpTypes)?s.lifeHpTypes:[]),...DEFAULT_LIFE_HP_TYPES]);
+    s.lifeHpTypes=uniqStrings([...(Array.isArray(s.lifeHpTypes)?s.lifeHpTypes:[]),...Array.from({length:10},(_,i)=>`${(i+1)*10}к хп`),...Array.from({length:5},(_,i)=>`${120+i*20}к хп`)]);
     s.mobTypes=uniqStrings(Array.isArray(s.mobTypes)?s.mobTypes:[]);
     s.settings={...(s.settings||{}),privacyMode:s.settings?.privacyMode||"none"};
     s.meta={...(s.meta||{}),dataVersion:4,updatedAt:Number(s.meta?.updatedAt)||0};
@@ -395,6 +228,12 @@ function migrateData(raw){
     for(const o of s.objects)if(Array.isArray(o.mobs))o.mobs=uniqStrings(o.mobs.map(m=>map.get(mobKey(m))||String(m).trim().replace(/\s+/g," ")));
     s.meta={...(s.meta||{}),dataVersion:6,updatedAt:Number(s.meta?.updatedAt)||0};
     v=6;
+  }
+  if(v<7){
+    s.objects=Array.isArray(s.objects)?s.objects:[];const oldLifeHp=uniqStrings(Array.isArray(s.lifeHpTypes)?s.lifeHpTypes:[]),mobs=uniqStrings(Array.isArray(s.mobTypes)?s.mobTypes:[]),hpToMob=new Map();
+    for(const hp of oldLifeHp){const mob=`Мобы ${hp}`;hpToMob.set(hp,mob);if(!mobs.some(x=>mobKey(x)===mobKey(mob)))mobs.push(mob)}
+    for(const o of s.objects)if(isBodyKind(o.kind)){const life=normalizeLifeValue(o.life).map(x=>({aggressive:x.aggressive,mob:hpToMob.get(x.mob)||x.mob})),legacy=Array.isArray(o.mobs)?o.mobs.map(m=>({aggressive:false,mob:String(m)})):[],merged=uniqLife([...life,...legacy]);if(merged.length)o.life=merged;else delete o.life;delete o.mobs;for(const x of merged)if(x.mob&&!mobs.some(m=>mobKey(m)===mobKey(x.mob)))mobs.push(x.mob)}
+    s.mobTypes=uniqStrings(mobs);delete s.lifeHpTypes;s.meta={...(s.meta||{}),dataVersion:7,updatedAt:Number(s.meta?.updatedAt)||0};v=7;
   }
   return s;
 }
@@ -707,30 +546,11 @@ function bindResourcePicker(id){
 }
 function selectedValues(id){return Array.from(document.querySelectorAll(`#${id} [data-resource]:not(.resourceCustomHint)`)).filter(b=>b.classList.contains("active")).map(b=>b.dataset.resource)}
 function lifePickerHtml(id,life=null){
-  const items=normalizeLifeValue(life);
-  const rowHtml=(item={},idx=0)=>`<div class="lifeVariant" data-life-variant>
-    <label class="lifeAggressive"><input type="checkbox" data-life-aggressive ${item.aggressive?"checked":""}><span data-life-aggressive-label>${item.aggressive?"Есть агрессивная":"Нет агрессивной"}</span></label>
-    <select data-life-hp><option value="">— не указано —</option>${state.lifeHpTypes.map(x=>`<option value="${esc(x)}" ${item.hp===x?"selected":""}>${esc(x)}</option>`).join("")}</select>
-    <button type="button" class="lifeRemove" data-life-remove title="Удалить вариант">×</button>
-  </div>`;
-  return `<div class="lifePicker" id="${id}"><label class="hint">Жизнь (можно несколько вариантов)</label><div class="lifeVariants">${items.map(rowHtml).join("")}</div><button type="button" class="lifeAdd" data-life-add>+ Добавить вариант</button></div>`;
+  const items=normalizeLifeValue(life);const rowHtml=(item={})=>`<div class="lifeVariant" data-life-variant><label class="lifeAggressive"><input type="checkbox" data-life-aggressive ${item.aggressive?"checked":""}><span data-life-aggressive-label>${item.aggressive?"Есть агрессивная":"Нет агрессивной"}</span></label><select data-life-mob><option value="">— не указано —</option>${state.mobTypes.map(x=>`<option value="${esc(x)}" ${item.mob===x?"selected":""}>${esc(x)}</option>`).join("")}</select><button type="button" class="lifeRemove" data-life-remove title="Удалить вариант">×</button></div>`;
+  return `<div class="lifePicker" id="${id}"><label class="hint">Мобы (можно несколько вариантов)</label><div class="lifeVariants">${items.map(rowHtml).join("")}</div><button type="button" class="lifeAdd" data-life-add>+ Добавить вариант</button></div>`;
 }
-function readLife(id){
-  const root=$("#"+id);if(!root)return [];
-  return Array.from(root.querySelectorAll("[data-life-variant]")).map(row=>({aggressive:!!row.querySelector("[data-life-aggressive]")?.checked,hp:row.querySelector("[data-life-hp]")?.value||""})).filter(x=>x.aggressive||x.hp);
-}
-function bindLifePicker(id){
-  const root=$("#"+id);if(!root||root.dataset.lifeBound==="1")return;root.dataset.lifeBound="1";
-  root.addEventListener("click",e=>{
-    const add=e.target.closest("[data-life-add]");
-    if(add){
-      const variants=root.querySelector(".lifeVariants"),row=document.createElement("div");row.className="lifeVariant";row.dataset.lifeVariant="";
-      row.innerHTML=`<label class="lifeAggressive"><input type="checkbox" data-life-aggressive><span data-life-aggressive-label>Нет агрессивной</span></label><select data-life-hp><option value="">— не указано —</option>${state.lifeHpTypes.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join("")}</select><button type="button" class="lifeRemove" data-life-remove title="Удалить вариант">×</button>`;variants?.appendChild(row);return;
-    }
-    const remove=e.target.closest("[data-life-remove]");if(remove){remove.closest("[data-life-variant]")?.remove();return}
-    const aggressive=e.target.closest("[data-life-aggressive]");if(aggressive){const label=aggressive.closest(".lifeAggressive")?.querySelector("[data-life-aggressive-label]");if(label)label.textContent=aggressive.checked?"Есть агрессивная":"Нет агрессивной"}
-  });
-}
+function readLife(id){const root=$("#"+id);if(!root)return [];return uniqLife(Array.from(root.querySelectorAll("[data-life-variant]")).map(row=>({aggressive:!!row.querySelector("[data-life-aggressive]")?.checked,mob:row.querySelector("[data-life-mob]")?.value||""})))}
+function bindLifePicker(id){const root=$("#"+id);if(!root||root.dataset.lifeBound==="1")return;root.dataset.lifeBound="1";root.addEventListener("click",e=>{const add=e.target.closest("[data-life-add]");if(add){const variants=root.querySelector(".lifeVariants"),row=document.createElement("div");row.className="lifeVariant";row.dataset.lifeVariant="";row.innerHTML=`<label class="lifeAggressive"><input type="checkbox" data-life-aggressive><span data-life-aggressive-label>Нет агрессивной</span></label><select data-life-mob><option value="">— не указано —</option>${state.mobTypes.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join("")}</select><button type="button" class="lifeRemove" data-life-remove title="Удалить вариант">×</button>`;variants?.appendChild(row);return}const remove=e.target.closest("[data-life-remove]");if(remove){remove.closest("[data-life-variant]")?.remove();return}const aggressive=e.target.closest("[data-life-aggressive]");if(aggressive){const label=aggressive.closest(".lifeAggressive")?.querySelector("[data-life-aggressive-label]");if(label)label.textContent=aggressive.checked?"Есть агрессивная":"Нет агрессивной"}})}
 
 function refreshCreationFields(){
   const kind=$("#objectType")?.value,sw=$("#createStarTypeWrap"),pw=$("#createPlanetTypeWrap"),rw=$("#createResourcesWrap"),lw=$("#createLifeWrap");if(!sw)return;
@@ -775,7 +595,6 @@ function addObject(kind,x,y,name){
     if(kind!=="asteroid")o.planetType=$("#createPlanetType")?.value||state.planetTypes[0]||"";
     o.size=roundSizeUp8($("#createSize")?.value.trim()||"");
     o.resources=selectedValues("createResources");
-    o.mobs=[];
     const life=readLife("createLife");if(life.length)o.life=life;
     o.isMoon=kind==="moon";
   }
@@ -846,13 +665,12 @@ function show(o){
   const resourcesHtml=bodyKind?`<label class="hint">Ресурсы</label>${resourcePickerHtml("editResources",o.resources||[])}`:"";
   const sizeHtml=bodyKind?`<label class="hint">Размер (информационный)</label><input id="editSize" value="${esc(o.size||"")}">`:"";
   const lifeHtml=bodyKind?lifePickerHtml("editLife",getLife(o)):"";
-  const mobsHtml=bodyKind&&(o.mobs||[]).length?`<label class="hint">Мобы</label><div class="objectMobs">${(o.mobs||[]).map(m=>`<span class="tag"><span>${isPrivacyStrict()?"моб (засекречено)":esc(m)}</span></span>`).join("")}</div>`:"";
   const favHtml=["star","planet","moon","asteroid"].includes(o.kind)?`<label class="favoriteToggle"><input id="editFavorite" type="checkbox" ${o.favorite?"checked":""}><span>★ Избранное</span></label>`:"";
   const galaxyHtml=o.kind==="star"?`<label class="hint">Галактика</label><select id="editGalaxyId"><option value="">— без галактики —</option>${galaxyOptions(o.galaxyId,false)}</select>`:"";
   $("#detailsBody").innerHTML=`<h3>${importedLabel(o)}</h3>${editableNameHtml(o)}
     <div class="detailsRow"><span>Тип объекта</span><b>${kindLabel(o.kind)}</b></div>
     ${coordEditHtml(o)}
-    ${galaxyHtml}${starTypeHtml}${planetTypeHtml}${resourcesHtml}${sizeHtml}${lifeHtml}${mobsHtml}${favHtml}${bindingHtml(o)}
+    ${galaxyHtml}${starTypeHtml}${planetTypeHtml}${resourcesHtml}${sizeHtml}${lifeHtml}${favHtml}${bindingHtml(o)}
     <div class="shareActions"><button id="copyShareCode" type="button">Скопировать код</button><button id="pasteShareCode" type="button">Вставить код</button></div>
     <div class="row"><button id="saveEdit" type="button">Сохранить изменения</button><button id="deleteBtn" class="danger" type="button" ${o.kind==="galaxy"&&o.auto?"disabled title='Галактики создаются автоматически'":""}>Удалить</button></div>`;
   bindResourcePicker("editResources");
@@ -1075,7 +893,7 @@ function filterMatch(o){
   if(fType!=="all"&&(o.kind!=="planet"&&o.kind!=="moon"))return false;
   if(fType!=="all"&&o.planetType!==fType)return false;
   if(fRes!=="all"&&!(o.resources||[]).includes(fRes))return false;
-  if(fMob!=="all"&&!(o.mobs||[]).includes(fMob))return false;
+  if(fMob!=="all"&&!getLife(o).some(x=>x.mob===fMob))return false;
   if(fav&&!(["star","planet","moon","asteroid"].includes(o.kind)))return false;
   if(sizeOp&&String($("#filterSize")?.value||"").trim()!==""&&Number.isFinite(sizeValue)&&isBodyKind(o.kind)){
     const size=Number(o.size);if(!Number.isFinite(size))return false;
@@ -1110,12 +928,10 @@ function renderFilters(){
 function refreshTypeLists(){
   const root=$("#planetTypes");if(root){root.innerHTML=state.planetTypes.map((x,i)=>`<span class="tag"><span>${esc(x)}</span><button class="tagDelete" data-index="${i}" title="Удалить тип" type="button">×</button></span>`).join("")||'<div class="muted">Типов пока нет.</div>';root.querySelectorAll(".tagDelete").forEach(b=>b.onclick=()=>{const i=Number(b.dataset.index),removed=state.planetTypes[i];if(removed===undefined)return;checkpoint();state.planetTypes.splice(i,1);for(const o of state.objects)if(isBodyKind(o.kind)&&o.planetType===removed)o.planetType="";save();refreshTypeLists();refreshCreationFields();renderFilters();refreshMigrationControls();if(selected)show(selected);toast(`Тип планеты удалён: ${removed}`)})}
   const rr=$("#resourceTypes");if(rr){rr.innerHTML=state.resourceTypes.map((x,i)=>`<span class="tag"><span>${esc(x)}</span><button class="tagDelete resourceDelete" data-index="${i}" title="Удалить ресурс" type="button">×</button></span>`).join("")||'<div class="muted">Ресурсов пока нет.</div>';rr.querySelectorAll(".resourceDelete").forEach(b=>b.onclick=()=>{const i=Number(b.dataset.index),removed=state.resourceTypes[i];if(removed===undefined)return;checkpoint();state.resourceTypes.splice(i,1);for(const o of state.objects)if(Array.isArray(o.resources))o.resources=o.resources.filter(x=>x!==removed);save();refreshTypeLists();refreshCreationFields();renderFilters();refreshMigrationControls();if(selected)show(selected);toast(`Ресурс удалён: ${removed}`)})}
-  const mt=$("#mobTypes");if(mt){mt.innerHTML=state.mobTypes.map((x,i)=>`<span class="tag"><span>${isPrivacyStrict()?"моб (засекречено)":esc(x)}</span><button class="tagDelete mobDelete" data-index="${i}" title="Удалить моба" type="button">×</button></span>`).join("")||'<div class="muted">Мобов пока нет.</div>';mt.querySelectorAll(".mobDelete").forEach(b=>b.onclick=()=>{const i=Number(b.dataset.index),removed=state.mobTypes[i];if(removed===undefined)return;checkpoint();state.mobTypes.splice(i,1);for(const o of state.objects)if(Array.isArray(o.mobs))o.mobs=o.mobs.filter(x=>x!==removed);save();refreshTypeLists();if(selected)show(selected);toast(`Моб удалён: ${removed}`)})}
-  const lh=$("#lifeHpTypes");if(lh){lh.innerHTML=state.lifeHpTypes.map((x,i)=>`<span class="tag"><span>${esc(x)}</span><button class="tagDelete lifeDelete" data-index="${i}" title="Удалить тип" type="button">×</button></span>`).join("")||'<div class="muted">Типов здоровья пока нет.</div>';lh.querySelectorAll(".lifeDelete").forEach(b=>b.onclick=()=>{const i=Number(b.dataset.index),removed=state.lifeHpTypes[i];if(removed===undefined)return;checkpoint();state.lifeHpTypes.splice(i,1);for(const o of state.objects)if(Array.isArray(o.life))o.life=o.life.filter(x=>x.hp!==removed);else if(o.life?.hp===removed)o.life.hp="";save();refreshTypeLists();refreshCreationFields();if(selected)show(selected);toast(`Тип здоровья удалён: ${removed}`)})}
+  const mt=$("#mobTypes");if(mt){mt.innerHTML=state.mobTypes.map((x,i)=>`<span class="tag"><span>${isPrivacyStrict()?"моб (засекречено)":esc(x)}</span><button class="tagDelete mobDelete" data-index="${i}" title="Удалить моба" type="button">×</button></span>`).join("")||'<div class="muted">Мобов пока нет.</div>';mt.querySelectorAll(".mobDelete").forEach(b=>b.onclick=()=>{const i=Number(b.dataset.index),removed=state.mobTypes[i];if(removed===undefined)return;checkpoint();state.mobTypes.splice(i,1);for(const o of state.objects)if(Array.isArray(o.life))o.life=o.life.filter(x=>x.mob!==removed);save();refreshTypeLists();refreshCreationFields();renderFilters();refreshMigrationControls();if(selected)show(selected);toast(`Моб удалён: ${removed}`)})}
 }
 
 function refreshMigrationControls(){
-  normalizeMobDictionary();
   const pf=$("#convertPlanetFrom"),pt=$("#convertPlanetTo"),rf=$("#convertResourceFrom"),rt=$("#convertResourceTo");if(!pf||!pt||!rf||!rt)return;
   const vals=[pf.value,pt.value,rf.value,rt.value];
   pf.innerHTML=state.planetTypes.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join("");pt.innerHTML=state.planetTypes.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join("");rf.innerHTML=state.resourceTypes.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join("");rt.innerHTML=state.resourceTypes.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join("");
@@ -1134,14 +950,12 @@ function refreshMigrationControls(){
 function convertPlanetType(){const from=$("#convertPlanetFrom").value,to=$("#convertPlanetTo").value;if(!from||!to||from===to){toast("Выбери разные типы планет.");return}checkpoint();let n=0;for(const o of state.objects)if((o.kind==="planet"||o.kind==="moon")&&o.planetType===from){o.planetType=to;n++}save();if(selected)show(selected);render();toast(`Конвертировано: ${n}. «${from}» → «${to}».`)}
 function convertResource(){const from=$("#convertResourceFrom").value,to=$("#convertResourceTo").value;if(!from||!to||from===to){toast("Выбери разные ресурсы.");return}checkpoint();let n=0;for(const o of state.objects)if(Array.isArray(o.resources)&&o.resources.includes(from)){o.resources=[...new Set(o.resources.map(r=>r===from?to:r))];n++}save();if(selected)show(selected);render();toast(`Обновлено тел: ${n}. «${from}» → «${to}».`)}
 function convertResourceToMob(){
-  normalizeMobDictionary();
   const from=$("#convertResourceToMobFrom")?.value,to=$("#convertResourceToMobTo")?.value;
   if(!from||!to||from===to){toast("Выбери ресурс-источник и существующий тип моба.");return}
   if(!state.mobTypes.includes(to)){toast("Тип моба не найден.");return}
   checkpoint();let n=0;
-  for(const o of state.objects)if(isBodyKind(o.kind)&&Array.isArray(o.resources)&&o.resources.includes(from)){o.resources=o.resources.filter(r=>r!==from);o.mobs=uniqStrings([...(o.mobs||[]),to]);n++}
+  for(const o of state.objects)if(isBodyKind(o.kind)&&Array.isArray(o.resources)&&o.resources.includes(from)){o.resources=o.resources.filter(r=>r!==from);o.life=uniqLife([...(o.life||[]),{mob:to,aggressive:false}]);n++}
   state.resourceTypes=state.resourceTypes.filter(r=>r!==from);
-  normalizeMobDictionary();
   save();refreshTypeLists();refreshCreationFields();renderFilters();refreshMigrationControls();if(selected)show(selected);render();toast(`Ресурс «${from}» преобразован в моба «${to}». Затронуто тел: ${n}.`);
 }
 function massClearImported(scope,id){if(!id){toast("Выбери объект.");return}checkpoint();let n=0;for(const o of state.objects){const match=scope==="star"?(o.id===id||o.starId===id||(o.kind==="marker"&&o.markerLayer==="system"&&o.starId===id)):(o.id===id||objectGalaxyId(o)===id);if(match&&o.imported){o.imported=false;delete o.importedAt;n++}}save();render();if(selected)show(selected);toast(`Снято отметок (!): ${n}`)}
@@ -1229,10 +1043,8 @@ $("#addMob").addEventListener("click",()=>{
   const input=$("#newMob"),v=input.value.trim().replace(/\s+/g," ");
   if(!v){toast("Введите название.");return}
   if(state.mobTypes.some(x=>mobKey(x)===mobKey(v))){toast("Такой тип моба уже существует.");return}
-  checkpoint();state.mobTypes.push(v);input.value="";normalizeMobDictionary();save();refreshTypeLists();refreshMigrationControls();renderFilters();if(selected)show(selected);render();toast("Моб добавлен: "+v);
+  checkpoint();state.mobTypes.push(v);input.value="";save();refreshTypeLists();refreshMigrationControls();renderFilters();if(selected)show(selected);render();toast("Моб добавлен: "+v);
 });
-$("#addLifeHpType").addEventListener("click",()=>addDictionaryValue("#newLifeHpType",state.lifeHpTypes,()=>{refreshTypeLists();refreshCreationFields();if(selected)show(selected);render()},"Тип здоровья добавлен: "));
-$("#newLifeHpType").addEventListener("keydown",e=>{if(e.key==="Enter")$("#addLifeHpType").click()});
 $("#resetCreateBtn").addEventListener("click",()=>{resetCreateFields();toast("Поля нового объекта сброшены.")});
 $("#newPlanetType").addEventListener("keydown",e=>{if(e.key==="Enter")$("#addPlanetType").click()});
 $("#newResource").addEventListener("keydown",e=>{if(e.key==="Enter")$("#addResource").click()});$("#newMob").addEventListener("keydown",e=>{if(e.key==="Enter")$("#addMob").click()});
@@ -1255,8 +1067,149 @@ function setupSettings(){
   exportFavSelect.onchange=()=>{checkpoint();state.settings.exportFavorites=exportFavSelect.value;save();toast(exportFavSelect.value==="hide"?"Избранное будет скрыто при экспорте.":"Избранное будет передаваться при экспорте.")};
   privacySelect?.addEventListener("change",()=>{checkpoint();state.settings.privacyMode=privacySelect.value;save();show(selected);render();toast(privacySelect.value==="none"?"Обычный режим отображения.":"Режим публикации включён: данные маскируются только в интерфейсе.")});
   const modal=$("#settingsModal"),open=()=>{modal.classList.add("open");modal.setAttribute("aria-hidden","false")},close=()=>{modal.classList.remove("open");modal.setAttribute("aria-hidden","true")};
+  if(modal?.dataset.logicBound==="1"){return}
+  modal?.setAttribute("data-logic-bound","1");
   $("#settingsBtn")?.addEventListener("click",open);$("#settingsCloseBtn")?.addEventListener("click",close);modal?.addEventListener("click",e=>{if(e.target===modal)close()});window.addEventListener("keydown",e=>{if(e.key==="Escape"&&modal?.classList.contains("open"))close()});
 }
+
+try{setupSettings()}catch(e){}
+
+function setupDiagnostics(){
+  const runBtn=$("#runDiagnosticsBtn"),results=$("#diagnosticResults"),summary=$("#diagnosticSummary"),copyBtn=$("#copyDiagnosticsBtn");
+  if(!runBtn||!results||!summary||!copyBtn||runBtn.dataset.bound==="1")return;
+  runBtn.dataset.bound="1";
+  let lastReport="";
+  const tests=[];
+  const add=(name,ok,detail="",status=ok?"pass":"fail")=>tests.push({name,ok,detail,status});
+  const fn=(name)=>typeof window[name]==="function";
+  const bodyKinds=new Set(["galaxy","star","cluster","planet","asteroid","moon"]);
+  const ref=(ids,id)=>!id||ids.has(id);
+  const safe=(label,cb)=>{try{return cb()}catch(e){return {ok:false,detail:`${label}: ${e?.message||String(e)}`}}};
+
+  const run=async()=>{
+    diagnosticRuntimeErrors.length=0;
+    runBtn.disabled=true;copyBtn.disabled=true;results.innerHTML="";summary.textContent="Проверка выполняется…";tests.length=0;
+    try{
+      
+      add("DOM интерфейса",!!document.body&&!!$("#map")&&!!$("#settingsModal")&&!!$("#settingsBtn"),"Карта, настройки и основной DOM-контур найдены.");
+      add("Canvas",!!canvas&&!!ctx&&canvas.width>0&&canvas.height>0,`Размер: ${canvas?.width||0}×${canvas?.height||0}.`);
+      add("Canvas 2D API",!!ctx&&typeof ctx.fillRect==="function"&&typeof ctx.clearRect==="function"&&typeof ctx.beginPath==="function","Основные операции Canvas 2D доступны.");
+      add("Интерфейсные блоки",["#mapPanel","#details","#bodyTree","#filterResults","#planetTypes","#resourceTypes","#mobTypes","#saveStatus","#dataVersionStatus"].every(s=>!!$(s)),"Карта, карточка, дерево, фильтры, справочники и статусы найдены.");
+
+      
+      add("Состояние приложения",!!state&&Array.isArray(state.objects)&&Array.isArray(state.planetTypes)&&Array.isArray(state.resourceTypes)&&Array.isArray(state.mobTypes),`Объектов: ${state?.objects?.length??"—"}; planetTypes: ${state?.planetTypes?.length??"—"}; resourceTypes: ${state?.resourceTypes?.length??"—"}; mobTypes: ${state?.mobTypes?.length??"—"}.`);
+      add("Версия данных",state?.meta?.dataVersion===DATA_VERSION,`Приложение: ${APP_NAME}; dataVersion: ${state?.meta?.dataVersion??"—"}; ожидается v${DATA_VERSION}.`);
+      add("Настройки",!!state?.settings&&typeof state.settings==="object",`Ключей настроек: ${state?.settings?Object.keys(state.settings).length:0}.`);
+
+      
+      const objects=Array.isArray(state?.objects)?state.objects:[],ids=new Set(),duplicateIds=[],badKinds=[],badCoords=[],badRefs=[],badSizes=[],badResources=[],badLife=[],badFlags=[];
+      for(const o of objects){
+        if(!o||!o.id||ids.has(o.id))duplicateIds.push(o?.id||"<empty>"); else ids.add(o.id);
+        if(!bodyKinds.has(o?.kind)&&!new Set(["scan","marker"]).has(o?.kind))badKinds.push(`${o?.id||"?"}:${o?.kind||"?"}`);
+        if(!Number.isFinite(Number(o?.x))||!Number.isFinite(Number(o?.y)))badCoords.push(o?.id||"?");
+        for(const k of ["galaxyId","starId","clusterId","parentPlanetId"])if(o?.[k]&&!ids.has(o[k])){  }
+        if(o?.size!=null&&(!Number.isFinite(Number(o.size))||Number(o.size)<1))badSizes.push(o.id||"?");
+        if(Array.isArray(o?.resources)&&o.resources.some(r=>!state.resourceTypes.includes(r)))badResources.push(o.id||"?");
+        if(Array.isArray(o?.life)){
+          for(const l of o.life){if(!l||typeof l.mob!=="string"||!l.mob.trim()||!state.mobTypes.some(m=>mobKey(m)===mobKey(l.mob)))badLife.push(o.id||"?");}
+        }
+        if(o?.kind==="scan"&&(!Number.isFinite(Number(o.radius))||Number(o.radius)<=0))badSizes.push(`${o.id||"?"}:scan-radius`);
+        if(o?.kind==="marker"&&o.markerLayer&&!new Set(["clusters","system"]).has(o.markerLayer))badFlags.push(`${o.id||"?"}:markerLayer`);
+        if(o?.imported && typeof o.imported!=="boolean")badFlags.push(`${o.id||"?"}:imported`);
+      }
+      for(const o of objects)for(const k of ["galaxyId","starId","clusterId","parentPlanetId"])if(o?.[k]&&!ids.has(o[k]))badRefs.push(`${o.id||"?"}.${k}→${o[k]}`);
+      add("Объекты: ID",duplicateIds.length===0,duplicateIds.length?`Дубликаты/пустые ID: ${duplicateIds.slice(0,8).join(", ")}.`:`Уникальных ID: ${ids.size}.`);
+      add("Объекты: типы",badKinds.length===0,badKinds.length?`Неизвестные kind: ${badKinds.slice(0,8).join(", ")}.`:`Все ${objects.length} объектов имеют допустимый тип.`);
+      add("Объекты: координаты",badCoords.length===0,badCoords.length?`Некорректные X/Y: ${badCoords.slice(0,8).join(", ")}.`:`Все объекты имеют конечные X/Y.`);
+      add("Объекты: связи",badRefs.length===0,badRefs.length?`Битые ссылки: ${badRefs.slice(0,10).join(", ")}.`:`Все galaxy/star/cluster/parent ссылки ведут на существующие ID.`);
+      add("Объекты: размеры",badSizes.length===0,badSizes.length?`Некорректные размеры: ${badSizes.slice(0,8).join(", ")}.`:`Размеры и радиусы объектов корректны.`);
+      add("Объекты: ресурсы",badResources.length===0,badResources.length?`Неизвестные ресурсы у: ${badResources.slice(0,8).join(", ")}.`:`Ресурсы всех объектов присутствуют в справочнике.`);
+      add("Объекты: жизненные формы",badLife.length===0,badLife.length?`Некорректная life-модель у: ${badLife.slice(0,8).join(", ")}.`:`Life-поля согласованы со справочником мобов.`);
+      add("Объекты: служебные поля",badFlags.length===0,badFlags.length?`Проблемные служебные поля: ${badFlags.slice(0,8).join(", ")}.`:`Флаги imported/markerLayer корректны.`);
+
+      
+      const stars=objects.filter(o=>o.kind==="star"),planets=objects.filter(o=>o.kind==="planet"),moons=objects.filter(o=>o.kind==="moon"),asteroids=objects.filter(o=>o.kind==="asteroid"),clusters=objects.filter(o=>o.kind==="cluster"),galaxies=objects.filter(o=>o.kind==="galaxy");
+      const semantic=[];
+      for(const o of planets)if(o.starId&&!stars.some(s=>s.id===o.starId))semantic.push(`${o.id}: planet.starId`);
+      for(const o of planets)if(o.clusterId&&!clusters.some(c=>c.id===o.clusterId))semantic.push(`${o.id}: planet.clusterId`);
+      for(const o of moons)if(o.parentPlanetId&&!planets.some(p=>p.id===o.parentPlanetId))semantic.push(`${o.id}: moon.parentPlanetId`);
+      for(const o of asteroids)if(o.parentPlanetId&&!planets.some(p=>p.id===o.parentPlanetId))semantic.push(`${o.id}: asteroid.parentPlanetId`);
+      for(const o of clusters)if(o.starId&&!stars.some(s=>s.id===o.starId))semantic.push(`${o.id}: cluster.starId`);
+      for(const o of stars)if(o.galaxyId&&!galaxies.some(g=>g.id===o.galaxyId))semantic.push(`${o.id}: star.galaxyId`);
+      add("Иерархия объектов",semantic.length===0,semantic.length?`Подозрительные родительские связи: ${semantic.slice(0,12).join(", ")}.`:`Иерархия galaxy → star → cluster → planet → moon/asteroid согласована.`);
+      const cycles=[];for(const o of objects){let cur=o,seen=new Set();for(let i=0;i<8;i++){const pid=cur?.parentPlanetId;if(!pid)break;if(seen.has(pid)){cycles.push(o.id);break}seen.add(pid);cur=objects.find(x=>x.id===pid);if(!cur)break}}
+      add("Циклы родительских связей",cycles.length===0,cycles.length?`Обнаружены циклы: ${cycles.slice(0,8).join(", ")}.`:`Циклов в parentPlanetId не обнаружено.`);
+
+      
+      const dictDup=(arr,key=v=>mobKey(v))=>{const seen=new Set(),dup=[];for(const v of arr||[]){const k=key(v);if(seen.has(k))dup.push(v);seen.add(k)}return dup};
+      const pdup=dictDup(state.planetTypes,v=>String(v).trim().toLowerCase()),rdup=dictDup(state.resourceTypes,v=>String(v).trim().toLowerCase()),mdup=dictDup(state.mobTypes);
+      add("Справочник типов планет",Array.isArray(state.planetTypes)&&state.planetTypes.every(x=>typeof x==="string"&&x.trim())&&pdup.length===0,`Записей: ${state.planetTypes?.length||0}${pdup.length?`; дубли: ${pdup.slice(0,6).join(", ")}`:"."}`);
+      add("Справочник ресурсов",Array.isArray(state.resourceTypes)&&state.resourceTypes.every(x=>typeof x==="string"&&x.trim())&&rdup.length===0,`Записей: ${state.resourceTypes?.length||0}${rdup.length?`; дубли: ${rdup.slice(0,6).join(", ")}`:"."}`);
+      add("Справочник мобов",Array.isArray(state.mobTypes)&&state.mobTypes.every(x=>typeof x==="string"&&x.trim())&&mdup.length===0,`Записей: ${state.mobTypes?.length||0}${mdup.length?`; дубли: ${mdup.slice(0,6).join(", ")}`:"."}`);
+
+      
+      const modules={"Загрузка и миграция":["load","migrateData","normalizeLoadedState"],"Сохранение и backup":["save","snapshotState","openPersistenceDB","queueIndexedSave","scheduleExternalBackup"],"Рендер карты":["render","resize","drawGrid","drawScanZones"],"Навигация и слои":["setLayer","navigateFromList","navigateFromMap","fitCurrentContext"],"Объекты и связи":["addObject","findDuplicate","mergeStarSystem","ensureGalaxies","ensureDeepClusters"],"Фильтры и поиск":["filterMatch","renderFilters"],"Справочники":["refreshTypeLists","refreshCreationFields","bindResourcePicker","bindLifePicker"],"Импорт/экспорт":["exportObjects","importObjects","makeShareCode","decodeShareCode"],"Интерактивность":["hit","updateMouseCoords","copyShareCode"],"Настройки":["ensureSettings","starRadius","scanRadius","privacyMode"]};
+      for(const [name,fns] of Object.entries(modules)){const missing=fns.filter(x=>!fn(x));add(`Модуль: ${name}`,missing.length===0,missing.length?`Отсутствуют функции: ${missing.join(", ")}.`:`Все ${fns.length} ключевых функций доступны.`)}
+
+      
+      const requiredButtons=["#newBtn","#addCoordsBtn","#clickModeBtn","#fitObjectsBtn","#rulerBtn","#exportBtn","#pasteShareBtn","#backupNowBtn","#backupFolderBtn","#undoBtn","#clearFilters","#addPlanetType","#addResource","#addMob"];
+      add("Кнопки и действия",requiredButtons.every(s=>!!$(s)),`Проверено элементов: ${requiredButtons.length}.`);
+      const boundChecks=[
+        ["Настройки",$("#settingsModal")?.dataset.logicBound==="1"||$("#settingsBtn")?.dataset.settingsFallbackBound==="1"],
+        ["Диагностика",runBtn.dataset.bound==="1"],
+        ["Фильтр",!!$("#filterGalaxyName")],
+        ["Создание объекта",!!$("#objectType")&&!!$("#objectName")&&!!$("#coordX")&&!!$("#coordY")],
+        ["Справочники",!!$("#newPlanetType")&&!!$("#newResource")&&!!$("#newMob")]
+      ];
+      add("UI-контуры",boundChecks.every(x=>x[1]),boundChecks.filter(x=>!x[1]).map(x=>x[0]).join(", ")||"Основные UI-контуры найдены и подготовлены.");
+
+      
+      const settingsOk=!!state.settings&&Number.isFinite(Number(state.settings.starRadius))&&Number(state.settings.starRadius)>0&&Number.isFinite(Number(state.settings.scanRadius))&&Number(state.settings.scanRadius)>0&&["none","star","strict"].includes(state.settings.privacyMode)&&["show","hide"].includes(state.settings.exportFavorites);
+      add("Значения настроек",settingsOk,`starRadius=${state.settings?.starRadius??"—"}; scanRadius=${state.settings?.scanRadius??"—"}; privacy=${state.settings?.privacyMode??"—"}; exportFavorites=${state.settings?.exportFavorites??"—"}.`);
+
+      
+      let snapOk=false,snapDetail="";try{const snap=snapshotState();snapOk=!!snap&&Array.isArray(snap.objects)&&snap.meta?.dataVersion===DATA_VERSION;snapDetail=snapOk?`Снимок содержит ${snap.objects.length} объектов и v${snap.meta.dataVersion}.`:`snapshotState вернул неожиданный формат.`}catch(e){snapDetail=e?.message||String(e)}add("Снимок данных",snapOk,snapDetail);
+      let jsonOk=false,jsonDetail="";try{const snap=snapshotState(),raw=JSON.stringify(snap),parsed=JSON.parse(raw);jsonOk=!!parsed&&Array.isArray(parsed.objects)&&parsed.objects.length===objects.length;jsonDetail=`JSON round-trip: ${raw.length.toLocaleString("ru-RU")} символов, объектов ${parsed.objects.length}.`}catch(e){jsonDetail=e?.message||String(e)}add("JSON сериализация",jsonOk,jsonDetail);
+      let shareOk=false,shareDetail="";try{const sample=objects.find(o=>bodyKinds.has(o.kind));if(sample){const code=makeShareCode(sample),decoded=decodeShareCode(code);shareOk=code.startsWith("SIGMA1.")&&decoded?.version===1&&Array.isArray(decoded.objects);shareDetail=shareOk?`SIGMA1 round-trip для ${sample.kind}: ${code.length.toLocaleString("ru-RU")} символов.`:`Код/декодирование вернуло неожиданный формат.`}else{shareOk=true;shareDetail="Нет тел для точечного SIGMA1-теста; функция доступна."}}catch(e){shareDetail=e?.message||String(e)}add("SIGMA1 код",shareOk,shareDetail);
+      let exportOk=false,exportDetail="";try{const exp=exportObjects();const payload={format:"STAR_MAP",version:12,dataVersion:DATA_VERSION,exportedAt:new Date().toISOString(),planetTypes:[...state.planetTypes],resourceTypes:[...state.resourceTypes],mobTypes:[...state.mobTypes],settings:{...state.settings},objects:exp};const raw=JSON.stringify(payload),parsed=JSON.parse(raw);exportOk=parsed.format==="STAR_MAP"&&parsed.dataVersion===DATA_VERSION&&Array.isArray(parsed.objects);exportDetail=exportOk?`Экспортный payload сериализуется; передаётся ${exp.length} из ${objects.length} объектов.`:`Неверный формат экспортного payload.`}catch(e){exportDetail=e?.message||String(e)}add("Экспортный формат",exportOk,exportDetail);
+
+      
+      let lsOk=false,lsDetail="";try{const k=`__sigma_diag_${Date.now()}`;localStorage.setItem(k,"ok");lsOk=localStorage.getItem(k)==="ok";localStorage.removeItem(k);lsDetail="Тестовая запись/чтение/удаление прошли."}catch(e){lsDetail=e?.message||String(e)}add("localStorage",lsOk,lsDetail);
+      let idbOk=false,idbDetail="";try{const db=await openPersistenceDB();if(!db)throw new Error("IndexedDB недоступна");const key=`diag-${Date.now()}`;idbOk=await new Promise(resolve=>{let done=false;const finish=v=>{if(!done){done=true;resolve(v)}};try{const tx=db.transaction("config","readwrite"),store=tx.objectStore("config");store.put({ok:true},key);store.delete(key);tx.oncomplete=()=>finish(true);tx.onerror=()=>finish(false);tx.onabort=()=>finish(false)}catch(e){finish(false)}});idbDetail=idbOk?"Тестовая запись и удаление прошли.":"Не удалось выполнить тестовую транзакцию."}catch(e){idbDetail=e?.message||String(e)}add("IndexedDB",idbOk,idbDetail);
+      add("Backup API",typeof backupText==="function"&&typeof makeBackupPayload==="function"&&typeof scheduleExternalBackup==="function","Функции формирования и планирования backup доступны.");
+
+      
+      const mobModelOk=Array.isArray(state.mobTypes)&&objects.every(o=>!Object.prototype.hasOwnProperty.call(o,"mobs")&&(!o.life||Array.isArray(o.life)))&&typeof getLife==="function"&&typeof normalizeLifeValue==="function";
+      add("Модель жизненных форм",mobModelOk,"Текущий контракт: справочник mobTypes + life у объектов; старое поле mobs не используется.");
+
+      
+      const countTexts=["statStars","statPlanets","statMoons","statAsteroids","statScans","statMarkers"].map(id=>$("#"+id));
+      const counts={star:stars.length,planet:planets.length,moon:moons.length,asteroid:asteroids.length,scan:objects.filter(o=>o.kind==="scan").length,marker:objects.filter(o=>o.kind==="marker").length};
+      const shown=[counts.star,counts.planet,counts.moon,counts.asteroid,counts.scan,counts.marker];
+      const uiCountOk=countTexts.every(x=>x&&x.textContent.trim()!=="");
+      add("Статусные счётчики",uiCountOk,`stars=${shown[0]}, planets=${shown[1]}, moons=${shown[2]}, asteroids=${shown[3]}, scans=${shown[4]}, markers=${shown[5]}. UI-элементы присутствуют.`);
+
+      
+      const recent=diagnosticRuntimeErrors.slice(-8),generic=recent.filter(x=>x.type==="error"&&String(x.message).trim()==="Script error."),concrete=recent.filter(x=>!(x.type==="error"&&String(x.message).trim()==="Script error."));
+      const errorDetail=recent.length?recent.map(x=>{const src=x.filename?` [${x.filename}:${x.lineno||0}:${x.colno||0}]`:"";return `${x.type}: ${x.message}${src}`}).join(" | "):"Зафиксированных ошибок нет.";
+      if(concrete.length)add("Ошибки JavaScript",false,errorDetail,"fail");
+      else if(generic.length)add("Ошибки JavaScript",true,"Браузер сообщил общий «Script error.» без стека. Источник: "+(generic.map(x=>x.filename||"не указан").join(", ")||"не указан"),"warn");
+      else add("Ошибки JavaScript",true,"Зафиксированных ошибок нет.","pass");
+
+      const fails=tests.filter(t=>t.status==="fail").length,warns=tests.filter(t=>t.status==="warn").length,passes=tests.filter(t=>t.status==="pass").length;
+      results.innerHTML=tests.map(t=>`<div class="diagnosticRow ${t.status}"><span class="diagnosticState">${t.status==="pass"?"✓":t.status==="warn"?"!":"✕"}</span><b>${esc(t.name)}</b><span class="diagnosticDetail">${esc(t.detail||"")}</span></div>`).join("");
+      summary.textContent=`Готово: ${passes} проверок пройдено${fails?`, ${fails} не пройдено`:""}${warns?`, ${warns} предупреждени${warns===1?"е":"я"}`:""}.`;
+      lastReport=[`SigmaSpace diagnostic`,`App: ${APP_NAME}`,`Data: v${DATA_VERSION}`,`Objects: ${objects.length}`,`Result: ${passes} pass, ${fails} fail, ${warns} warn`,"",...tests.map(t=>`[${t.status.toUpperCase()}] ${t.name}\n${t.detail||""}`)].join("\n");
+      copyBtn.disabled=!lastReport;
+      copyBtn.onclick=async()=>{try{await navigator.clipboard.writeText(lastReport);toast("Отчёт скопирован.")}catch(e){toast("Не удалось скопировать отчёт.")}};
+    }catch(e){
+      recordDiagnosticError("diagnostic",e);summary.textContent="Диагностика прервана из-за ошибки.";results.innerHTML=`<div class="diagnosticRow fail"><span class="diagnosticState">✕</span><b>Диагностический тест</b><span class="diagnosticDetail">${esc(e?.stack||e?.message||String(e))}</span></div>`;
+    }finally{runBtn.disabled=false}
+  };
+  runBtn.addEventListener("click",run);
+}
+
+try{setupDiagnostics()}catch(e){recordDiagnosticError("setupDiagnostics",e)}
 
 function setupCollapsible(toggleId,bodyId,iconId){
   const toggle=$("#"+toggleId),body=$("#"+bodyId),icon=$("#"+iconId);
@@ -1328,14 +1281,16 @@ function shareObjectsFor(root){
 }
 function bytesToBase64(bytes){let bin="";const chunk=0x8000;for(let i=0;i<bytes.length;i+=chunk)bin+=String.fromCharCode(...bytes.subarray(i,i+chunk));return btoa(bin).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"")}
 function base64ToBytes(str){const b64=str.replace(/-/g,"+").replace(/_/g,"/")+"=".repeat((4-str.length%4)%4),bin=atob(b64),out=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)out[i]=bin.charCodeAt(i);return out}
-function makeShareCode(o){const objects=shareObjectsFor(o);const payload={kind:"SIGMA_SHARE",version:1,sourceKind:o.kind,planetTypes:state.planetTypes.filter(x=>objects.some(q=>q.planetType===x)),resourceTypes:state.resourceTypes.filter(x=>objects.some(q=>(q.resources||[]).includes(x))),lifeHpTypes:state.lifeHpTypes.filter(x=>objects.some(q=>normalizeLifeValue(q.life).some(l=>l.hp===x))),mobTypes:state.mobTypes.filter(x=>objects.some(q=>(q.mobs||[]).includes(x))),objects};return `SIGMA1.${bytesToBase64(new TextEncoder().encode(JSON.stringify(payload)))}`}
+function makeShareCode(o){const objects=shareObjectsFor(o);const payload={kind:"SIGMA_SHARE",version:1,sourceKind:o.kind,planetTypes:state.planetTypes.filter(x=>objects.some(q=>q.planetType===x)),resourceTypes:state.resourceTypes.filter(x=>objects.some(q=>(q.resources||[]).includes(x))),mobTypes:state.mobTypes.filter(x=>objects.some(q=>normalizeLifeValue(q.life).some(l=>l.mob===x)||Array.isArray(q.mobs)&&q.mobs.includes(x))),objects};return `SIGMA1.${bytesToBase64(new TextEncoder().encode(JSON.stringify(payload)))}`}
+
 function decodeShareCode(code){const raw=String(code||"").trim();if(!raw.startsWith("SIGMA1."))throw new Error("Это не код SigmaSpace.");return JSON.parse(new TextDecoder().decode(base64ToBytes(raw.slice(7))))}
 async function copyShareCode(o){try{const code=makeShareCode(o);await navigator.clipboard.writeText(code);toast(`Код скопирован: ${code.length.toLocaleString("ru-RU")} символов.`)}catch(e){const ta=document.createElement("textarea");ta.value=makeShareCode(o);document.body.appendChild(ta);ta.select();document.execCommand("copy");ta.remove();toast("Код скопирован в буфер обмена.")}}
-function pasteShareCode(){const code=prompt("Вставь код SigmaSpace:");if(!code)return;try{const inc=decodeShareCode(code),incomingObjects=Array.isArray(inc.objects)?inc.objects:[];checkpoint();for(const t of uniqStrings(inc.planetTypes||[]))if(!state.planetTypes.includes(t))state.planetTypes.push(t);for(const r of uniqStrings(inc.resourceTypes||[]))if(!state.resourceTypes.includes(r))state.resourceTypes.push(r);for(const h of uniqStrings(inc.lifeHpTypes||[]))if(!state.lifeHpTypes.includes(h))state.lifeHpTypes.push(h);for(const m of uniqStrings(inc.mobTypes||[]))if(!state.mobTypes.some(x=>mobKey(x)===mobKey(m)))state.mobTypes.push(m);normalizeMobDictionary();const res=importObjects(inc);normalizeScanNumbers();ensureGalaxies();ensureDeepClusters();save();refreshTypeLists();refreshCreationFields();renderFilters();refreshMigrationControls();render();toast(`Код импортирован: добавлено ${res.addedCount}, дубликатов пропущено ${res.dup}.`)}catch(e){toast("Ошибка кода: "+e.message)}}
+function pasteShareCode(){const code=prompt("Вставь код SigmaSpace:");if(!code)return;try{const inc=decodeShareCode(code);checkpoint();const incomingObjects=Array.isArray(inc.objects)?inc.objects:[],oldHp=uniqStrings(inc.lifeHpTypes||[]),hpToMob=new Map(oldHp.map(h=>[h,`Мобы ${h}`]));for(const t of uniqStrings(inc.planetTypes||[]))if(!state.planetTypes.includes(t))state.planetTypes.push(t);for(const r of uniqStrings(inc.resourceTypes||[]))if(!state.resourceTypes.includes(r))state.resourceTypes.push(r);for(const m of uniqStrings(inc.mobTypes||[]))if(!state.mobTypes.some(x=>mobKey(x)===mobKey(m)))state.mobTypes.push(m);for(const o of incomingObjects)if(isBodyKind(o.kind)){o.life=uniqLife(normalizeLifeValue(o.life).map(x=>({mob:hpToMob.get(x.mob)||x.mob,aggressive:x.aggressive})).concat(Array.isArray(o.mobs)?o.mobs.map(m=>({mob:String(m),aggressive:false})):[]));delete o.mobs}const res=importObjects(inc);normalizeScanNumbers();ensureGalaxies();ensureDeepClusters();save();refreshTypeLists();refreshCreationFields();renderFilters();refreshMigrationControls();render();toast(`Код импортирован: добавлено ${res.addedCount}, дубликатов пропущено ${res.dup}.`)}catch(e){toast("Ошибка кода: "+e.message)}}
+
 $("#pasteShareBtn")?.addEventListener("click",pasteShareCode);
 $("#exportBtn").addEventListener("click",()=>{
   const objects=exportObjects();
-  const payload={format:"STAR_MAP",version:12,dataVersion:DATA_VERSION,exportedAt:new Date().toISOString(),planetTypes:[...state.planetTypes],resourceTypes:[...state.resourceTypes],lifeHpTypes:[...state.lifeHpTypes],mobTypes:[...state.mobTypes],settings:{...state.settings},objects};
+  const payload={format:"STAR_MAP",version:12,dataVersion:DATA_VERSION,exportedAt:new Date().toISOString(),planetTypes:[...state.planetTypes],resourceTypes:[...state.resourceTypes],mobTypes:[...state.mobTypes],settings:{...state.settings},objects};
   const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:"application/json"}));a.download="SigmaSpace.starmap";a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
   toast(`Экспорт: передано объектов ${objects.length} из ${state.objects.length}.`);
 });
@@ -1347,7 +1302,7 @@ function importObjects(inc){
     if(o.kind==="star"&&o.galaxyId)o.galaxyManualBinding=true;
     if(o.galaxyId&&idMap.has(o.galaxyId))o.galaxyId=idMap.get(o.galaxyId);if(o.starId&&idMap.has(o.starId))o.starId=idMap.get(o.starId);if(o.clusterId&&idMap.has(o.clusterId))o.clusterId=idMap.get(o.clusterId);if(o.parentPlanetId&&idMap.has(o.parentPlanetId))o.parentPlanetId=idMap.get(o.parentPlanetId);
     if(o.kind==="star"&&o.galaxyId&&!state.objects.some(x=>x.kind==="galaxy"&&x.id===o.galaxyId)&&!idMap.has(src.galaxyId)){o.galaxyId=null;o.galaxyManualBinding=false}
-    if(isBodyKind(o.kind)){o.resources=uniqStrings(o.resources);o.mobs=uniqStrings(o.mobs);if(o.size)o.size=roundSizeUp8(o.size);o.life=normalizeLifeValue(o.life);if(!o.life.length)delete o.life;}
+    if(isBodyKind(o.kind)){o.resources=uniqStrings(o.resources);if(o.size)o.size=roundSizeUp8(o.size);o.life=uniqLife(normalizeLifeValue(o.life).concat(Array.isArray(o.mobs)?o.mobs.map(m=>({mob:m,aggressive:false})):[]));delete o.mobs;if(!o.life.length)delete o.life;}
     if(o.kind==="scan"){o.name="";o.radius=scanRadius();}
     if(o.kind==="marker"&&!o.markerLayer)o.markerLayer=o.starId?"system":"clusters";
     const sameId=state.objects.find(x=>x.id===o.id),sameObject=findDuplicate(o);if(sameObject){idMap.set(src.id,sameObject.id);dup++;continue}
@@ -1362,10 +1317,11 @@ $("#importInput").addEventListener("change",async e=>{
     checkpoint();
     const incomingPlanetTypes=uniqStrings([...(inc.planetTypes||[]),...incomingObjects.filter(o=>o.kind==="planet"||o.kind==="moon").map(o=>o.planetType)]);
     const incomingResources=uniqStrings([...(inc.resourceTypes||[]),...incomingObjects.flatMap(o=>Array.isArray(o.resources)?o.resources:[])]);
-    const incomingLife=uniqStrings([...(inc.lifeHpTypes||[]),...incomingObjects.flatMap(o=>normalizeLifeValue(o.life).map(x=>x.hp))]);
-    const incomingMobs=uniqStrings([...(inc.mobTypes||[]),...incomingObjects.flatMap(o=>Array.isArray(o.mobs)?o.mobs:[])]);
-    for(const t of incomingPlanetTypes)if(!state.planetTypes.includes(t))state.planetTypes.push(t);for(const r of incomingResources)if(!state.resourceTypes.includes(r))state.resourceTypes.push(r);for(const h of incomingLife)if(!state.lifeHpTypes.includes(h))state.lifeHpTypes.push(h);for(const m of incomingMobs)if(!state.mobTypes.some(x=>mobKey(x)===mobKey(m)))state.mobTypes.push(m);
-    const res=importObjects(inc);normalizeMobDictionary();normalizeScanNumbers();ensureGalaxies();ensureDeepClusters();save();refreshTypeLists();refreshCreationFields();renderFilters();refreshMigrationControls();render();toast(`Импорт: добавлено ${res.addedCount}, дубликатов пропущено ${res.dup}. Новые тела помечены (!) — их можно вручную привязать к вашей структуре.`);
+    const oldHp=uniqStrings(inc.lifeHpTypes||[]),hpToMob=new Map(oldHp.map(h=>[h,`Мобы ${h}`]));
+    const incomingMobs=uniqStrings([...(inc.mobTypes||[]),...incomingObjects.flatMap(o=>Array.isArray(o.mobs)?o.mobs:[]),...incomingObjects.flatMap(o=>normalizeLifeValue(o.life).map(x=>hpToMob.get(x.mob)||x.mob))]);
+    for(const t of incomingPlanetTypes)if(!state.planetTypes.includes(t))state.planetTypes.push(t);for(const r of incomingResources)if(!state.resourceTypes.includes(r))state.resourceTypes.push(r);for(const m of incomingMobs)if(!state.mobTypes.some(x=>mobKey(x)===mobKey(m)))state.mobTypes.push(m);
+    for(const o of incomingObjects)if(isBodyKind(o.kind)){o.life=uniqLife(normalizeLifeValue(o.life).map(x=>({mob:hpToMob.get(x.mob)||x.mob,aggressive:x.aggressive})).concat(Array.isArray(o.mobs)?o.mobs.map(m=>({mob:String(m),aggressive:false})):[]));delete o.mobs}
+    const res=importObjects(inc);normalizeScanNumbers();ensureGalaxies();ensureDeepClusters();save();refreshTypeLists();refreshCreationFields();renderFilters();refreshMigrationControls();render();toast(`Импорт: добавлено ${res.addedCount}, дубликатов пропущено ${res.dup}. Новые тела помечены (!) — их можно вручную привязать к вашей структуре.`);
   }catch(err){toast("Ошибка импорта: "+err.message)}
   e.target.value="";
 });
@@ -1375,7 +1331,7 @@ $("#newBtn").addEventListener("click",()=>{
   const count=state.objects.length;
   const message=count?`Текущая карта содержит ${count} объектов.\n\nВсе несохранённые изменения и текущая карта будут заменены новой пустой картой.\n\nПродолжить?`:`Создать новую пустую карту?`;
   if(!confirm(message))return;
-  checkpoint();state={objects:[],planetTypes:[...DEFAULT_PLANET_TYPES],resourceTypes:[...DEFAULT_RESOURCE_TYPES],lifeHpTypes:[...DEFAULT_LIFE_HP_TYPES],mobTypes:[],settings:{scanDisplay:"radius",importDisplay:"show",exportFavorites:"show",privacyMode:"none",starRadius:DEFAULT_STAR_RADIUS,scanRadius:DEFAULT_SCAN_RADIUS},meta:{dataVersion:DATA_VERSION,updatedAt:0}};layer="clusters";starId=null;clusterId=null;selected=null;view={x:0,y:0,scale:1};rulerMode=false;rulerPoints=[];save();refreshTypeLists();refreshCreationFields();refreshMigrationControls();show(null);render();
+  checkpoint();state={objects:[],planetTypes:[...DEFAULT_PLANET_TYPES],resourceTypes:[...DEFAULT_RESOURCE_TYPES],mobTypes:[],settings:{scanDisplay:"radius",importDisplay:"show",exportFavorites:"show",privacyMode:"none",starRadius:DEFAULT_STAR_RADIUS,scanRadius:DEFAULT_SCAN_RADIUS},meta:{dataVersion:DATA_VERSION,updatedAt:0}};layer="clusters";starId=null;clusterId=null;selected=null;view={x:0,y:0,scale:1};rulerMode=false;rulerPoints=[];save();refreshTypeLists();refreshCreationFields();refreshMigrationControls();show(null);render();
 });
 
 $("#backupNowBtn")?.addEventListener("click",async()=>{
@@ -1394,4 +1350,4 @@ setInterval(()=>{
   if(d!==lastKnownDpr){lastKnownDpr=d;resize()}
   $("#fps").textContent=Math.round(fps);
 },500);function loop(t){const dt=t-last;last=t;if(dt>0)fps=1000/dt;requestAnimationFrame(loop)}
-load();setupSettings();ensureGalaxies();ensureDeepClusters();refreshTypeLists();refreshCreationFields();refreshMigrationControls();$("#mouseCoords").textContent="X —, Y —";updateDataVersionStatus();updateSaveStatus(state.meta?.updatedAt?`Сохранено ${new Date(state.meta.updatedAt).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`:"—");updateBackupStatus("Не подключён");render();updateUndoButton();restoreBackupDirectory();hydrateFromIndexedDB();requestAnimationFrame(loop);
+load();try{setupSettings()}catch(e){};ensureGalaxies();ensureDeepClusters();refreshTypeLists();refreshCreationFields();refreshMigrationControls();$("#mouseCoords").textContent="X —, Y —";updateDataVersionStatus();updateSaveStatus(state.meta?.updatedAt?`Сохранено ${new Date(state.meta.updatedAt).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`:"—");updateBackupStatus("Не подключён");render();updateUndoButton();restoreBackupDirectory();hydrateFromIndexedDB();requestAnimationFrame(loop);
