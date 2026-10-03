@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SigmaSpace — Звёздная карта</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="title">ЗВЁЗДНАЯ КАРТА</div>
+    <div class="headerSpacer"></div>
+    <div class="actions">
+      <button id="settingsBtn" type="button">Настройки</button>
+      <button id="undoBtn" type="button" title="Отменить последнее изменение" disabled>↶ Undo</button>
+      <button id="newBtn" type="button">Новая карта</button>
+      <button id="exportBtn" type="button">Экспорт</button><button id="pasteShareBtn" type="button">Вставить код</button>
+      <label class="fileBtn">Импорт<input id="importInput" type="file" accept=".json,.starmap"></label>
+    </div>
+  </header>
+
+  <main>
+    <aside class="sidebar leftSidebar">
+      <div class="card starContextCard collapsibleCard">
+        <button id="selectedStarToggle" class="collapseHeader" type="button" aria-expanded="true">
+          <span>Выбранная звезда</span><span id="selectedStarToggleIcon">−</span>
+        </button>
+        <div id="selectedStarBody" class="collapseBody">
+          <div id="selectedStarHeader" class="selectedStarHeader">Звезда не выбрана</div>
+          <div id="selectedStarHint" class="hint">Выбери звезду на слое звёзд или в дереве.</div>
+        </div>
+      </div>
+      <div class="card collapsibleCard" id="details">
+        <button id="detailsToggle" class="collapseHeader" type="button" aria-expanded="true">
+          <span>Объект</span><span id="detailsToggleIcon">−</span>
+        </button>
+        <div id="detailsBody" class="collapseBody">
+          <div class="muted">Выбери точку на карте или тело в дереве.</div>
+        </div>
+      </div>
+
+      <div class="card systemBodiesCard collapsibleCard">
+        <button id="systemBodiesToggle" class="collapseHeader" type="button" aria-expanded="true">
+          <span id="systemBodiesTitle">Тела звёздной системы</span><span id="systemBodiesToggleIcon">−</span>
+        </button>
+        <div id="systemBodiesBody" class="collapseBody">
+          <div id="systemBodies" class="systemBodies"></div>
+        </div>
+      </div>
+
+      <div class="card markersCard collapsibleCard">
+        <button id="markersToggle" class="collapseHeader" type="button" aria-expanded="true">
+          <span>Метки</span><span id="markersToggleIcon">−</span>
+        </button>
+        <div id="markersBody" class="collapseBody">
+          <div id="markerList" class="markerList"></div>
+        </div>
+      </div>
+
+      <div class="card scansCard collapsibleCard">
+        <button id="scansToggle" class="collapseHeader" type="button" aria-expanded="true">
+          <span>Сканы</span><span id="scansToggleIcon">−</span>
+        </button>
+        <div id="scansBody" class="collapseBody">
+          <div id="scanList" class="scanList"></div>
+        </div>
+      </div>
+    </aside>
+
+    <section class="mapPanel" id="mapPanel">
+      <canvas id="map"></canvas>
+      <div id="yLabels" class="yLabels"></div>
+      <div id="xLabels" class="xLabels"></div>
+      <div id="status" class="status"></div>
+      <div id="crosshair" class="crosshair">＋</div>
+      <div id="mapTooltip" class="mapTooltip" role="tooltip" aria-hidden="true"></div>
+    </section>
+
+    <aside class="sidebar rightSidebar">
+      <div class="card coordCard">
+        <div><span>Центр:</span> <b id="centerCoords">X +0, Y +0</b></div>
+        <div class="mouseCoords"><span>Курсор:</span> <b id="mouseCoords">X —, Y —</b></div>
+        <button id="fitObjectsBtn" class="fitBtn" type="button" title="Автоматически подобрать масштаб и центр для объектов текущего контекста">⌗ Вместить объекты</button><button id="rulerBtn" class="fitBtn" type="button">📏 Линейка</button><button id="rulerClearBtn" class="fitBtn" type="button">Сбросить измерение</button><div id="rulerResult" class="rulerResult">Линейка выключена.</div>
+      </div>
+
+      <div class="crumbs" id="crumbs">Вселенная</div>
+      <div class="layers">
+        <button data-layer="clusters" type="button">Clusters</button>
+        <button data-layer="stars" type="button">Stars</button>
+        <button data-layer="deep" type="button">Deep</button>
+        <button data-layer="middle" type="button">Middle</button>
+      </div>
+
+      <div class="card stateCard">
+        <h3>Состояние</h3>
+        <div>Объектов в базе: <b id="totalCount">0</b></div>
+        <div>На текущем слое: <b id="visibleCount">0</b></div>
+        <div>FPS: <b id="fps">—</b></div>
+        <div>Звёзд: <b id="statStars">0</b></div>
+        <div>Планет: <b id="statPlanets">0</b></div>
+        <div>Спутников: <b id="statMoons">0</b></div>
+        <div>Астероидов: <b id="statAsteroids">0</b></div>
+        <div>Сканов: <b id="statScans">0</b></div>
+        <div>Меток: <b id="statMarkers">0</b></div>
+      </div>
+
+      <div class="card collapsibleCard">
+        <button id="createToggle" class="collapseHeader" type="button" aria-expanded="true">
+          <span>Добавить объект</span><span id="createToggleIcon">−</span>
+        </button>
+        <div id="createBody" class="collapseBody">
+          <select id="objectType"></select>
+          <div id="createStarTypeWrap">
+            <label class="hint">Тип звезды</label>
+            <select id="createStarType"></select>
+          </div>
+          <div id="createPlanetTypeWrap">
+            <div id="createPlanetTypeField">
+              <label class="hint">Тип планеты</label>
+              <select id="createPlanetType"></select>
+            </div>
+            <label class="hint">Размер (информационный)</label>
+            <input id="createSize" placeholder="Например, 120">
+          </div>
+          <div id="createResourcesWrap"></div>
+          <div id="createLifeWrap"></div>
+          <input id="objectName" placeholder="Название (необязательно)">
+          <div class="row">
+            <input id="coordX" type="number" step="1" placeholder="X">
+            <input id="coordY" type="number" step="1" placeholder="Y">
+          </div>
+          <button id="addCoordsBtn" class="primary" type="button">Добавить по координатам</button>
+          <div class="row"><button id="clickModeBtn" type="button">＋ Режим добавления кликом</button><button id="resetCreateBtn" type="button">Сбросить</button></div>
+          <div id="addHint" class="hint"></div>
+        </div>
+      </div>
+
+      <div class="card treeCard collapsibleCard">
+        <button id="bodiesToggle" class="collapseHeader" type="button" aria-expanded="true">
+          <span>Небесные тела</span><span id="bodiesToggleIcon">−</span>
+        </button>
+        <div id="bodiesBody" class="collapseBody">
+          <div id="bodyTree" class="bodyTree"></div>
+        </div>
+      </div>
+
+      <div class="card collapsibleCard">
+        <button id="filtersToggle" class="collapseHeader" type="button" aria-expanded="true">
+          <span>Поиск и избранное</span><span id="filtersToggleIcon">−</span>
+        </button>
+        <div id="filtersBody" class="collapseBody">
+          <label class="hint">Галактика</label>
+          <input id="filterGalaxyName" type="search" placeholder="Название галактики" autocomplete="off">
+          <label class="hint">Тип планеты</label>
+          <select id="filterPlanetType"><option value="all">Все типы планет</option></select>
+          <label class="hint">Ресурс</label>
+          <select id="filterResource"><option value="all">Все ресурсы</option></select>
+          <label class="hint">Моб</label>
+          <select id="filterMob"><option value="all">Все мобы</option></select>
+          <label class="hint">Размер</label>
+          <div class="row sizeFilterRow"><select id="filterSizeOp"><option value="">Не фильтровать</option><option value="gt">Больше</option><option value="lt">Меньше</option></select><input id="filterSize" type="number" min="0" step="1" placeholder="Размер"></div>
+          <label class="favoriteToggle"><input id="filterFavorite" type="checkbox"><span>★ Только избранное</span></label>
+          <button id="clearFilters" type="button">Сбросить фильтры</button>
+          <div id="filterResults" class="filterResults"></div>
+        </div>
+      </div>
+
+      <div class="card collapsibleCard">
+        <button id="typesToggle" class="collapseHeader" type="button" aria-expanded="true">
+          <span>Типы планет и ресурсы</span><span id="typesToggleIcon">−</span>
+        </button>
+        <div id="typesBody" class="collapseBody">
+          <h3>Типы планет</h3>
+          <div id="planetTypes"></div>
+          <div class="row">
+            <input id="newPlanetType" placeholder="Новый тип">
+            <button id="addPlanetType" type="button">+</button>
+          </div>
+          <h3>Ресурсы</h3>
+          <div id="resourceTypes"></div>
+          <div class="row">
+            <input id="newResource" placeholder="Новый ресурс">
+            <button id="addResource" type="button">+</button>
+          </div>
+          <h3>Мобы</h3>
+          <div id="mobTypes"></div>
+          <div class="row"><input id="newMob" placeholder="Новый моб"><button id="addMob" type="button">+</button></div>
+          <h3>Жизнь — здоровье</h3>
+          <div id="lifeHpTypes"></div>
+          <div class="row">
+            <input id="newLifeHpType" placeholder="Например, 250к хп">
+            <button id="addLifeHpType" type="button">+</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card collapsibleCard">
+        <button id="migrationToggle" class="collapseHeader" type="button" aria-expanded="true">
+          <span>Миграция и конвертация</span><span id="migrationToggleIcon">−</span>
+        </button>
+        <div id="migrationBody" class="collapseBody">
+          <div class="hint migrationNote">Импортированные типы и ресурсы добавляются в справочник. Здесь можно массово заменить один вариант на другой.</div>
+          <label class="hint">Тип планеты: из</label>
+          <select id="convertPlanetFrom"></select>
+          <label class="hint">Тип планеты: в</label>
+          <select id="convertPlanetTo"></select>
+          <button id="convertPlanetBtn" type="button">Конвертировать все планеты</button>
+          <hr>
+          <label class="hint">Ресурс: из</label>
+          <select id="convertResourceFrom"></select>
+          <label class="hint">Ресурс: в</label>
+          <select id="convertResourceTo"></select>
+          <button id="convertResourceBtn" type="button">Конвертировать все ресурсы</button>
+          <hr>
+          <label class="hint">Ресурс → моб: из</label>
+          <select id="convertResourceToMobFrom"></select>
+          <label class="hint">Ресурс → моб: в</label>
+          <select id="convertResourceToMobTo"></select>
+          <button id="convertResourceToMobBtn" type="button">Конвертировать в моба</button>
+          <hr>
+          <label class="hint">Снять (!) со всей галактики</label>
+          <select id="massVerifyGalaxy"></select>
+          <button id="massVerifyGalaxyBtn" type="button">Снять отметки с галактики</button>
+          <label class="hint">Снять (!) со всей звезды</label>
+          <select id="massVerifyStar"></select>
+          <button id="massVerifyStarBtn" type="button">Снять отметки со звезды</button>
+        </div>
+      </div>
+      <div class="card backupCard">
+        <h3>Резервирование</h3>
+        <div class="row">
+          <button id="backupNowBtn" type="button">Сделать копию</button>
+          <button id="backupFolderBtn" type="button">Автобэкап</button>
+        </div>
+        <div class="hint">Автобэкап сохраняет полную карту во внешнюю папку. Это защищает данные от очистки данных сайта и смены браузера.</div>
+      </div>
+
+      <div class="card persistenceCard">
+        <h3>Состояние сохранения</h3>
+        <div class="persistenceRow"><span>Сохранение:</span><b id="saveStatus">—</b></div>
+        <div class="persistenceRow"><span>Резервная копия:</span><b id="backupStatus">—</b></div>
+        <div class="persistenceRow"><span>Версия данных:</span><b id="dataVersionStatus">v3</b></div>
+      </div>
+    </aside>
+  </main>
+  <div id="settingsModal" class="settingsModal" aria-hidden="true">
+    <div class="settingsDialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="settingsDialogHeader"><h2 id="settingsTitle">Настройки</h2><button id="settingsCloseBtn" type="button" class="settingsClose">×</button></div>
+      <div class="settingsDialogBody">
+        <div class="settingsGrid">
+          <label class="hint">Радиус звезды<input id="starRadiusSetting" type="number" min="1" max="1000000" step="100" inputmode="numeric"></label>
+          <label class="hint">Радиус скана<input id="scanRadiusSetting" type="number" min="1" max="1000000" step="100" inputmode="numeric"></label>
+          <label class="hint">Сканы<select id="scanDisplayMode"><option value="none">Не отображать</option><option value="radius">Только радиус</option><option value="center">Радиус + центральная точка</option></select></label>
+          <label class="hint">Импортированные данные<select id="importDisplayMode"><option value="show">Отображать</option><option value="hide">Скрыть</option></select></label>
+          <label class="hint">Избранное при экспорте<select id="exportFavoritesMode"><option value="show">Передавать избранное</option><option value="hide">Скрыть избранное</option></select></label>
+          <label class="hint settingsWide">Режим публикации / скрытия данных<select id="privacyMode">
+            <option value="none">Обычный режим</option>
+            <option value="hideStarGalaxy">Скрыть названия и координаты галактик и звёзд</option>
+            <option value="planetNamesOnly">Оставить только названия планет, спутников и астероидов</option>
+          </select></label>
+        </div>
+        <div class="hint privacyDescription">Режим публикации маскирует данные только в интерфейсе. Сама карта и сохранённые данные не изменяются.</div>
+      </div>
+    </div>
+  </div>
+  <div id="toast" class="toast"></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
