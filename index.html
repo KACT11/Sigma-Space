@@ -283,7 +283,15 @@
   document.addEventListener("DOMContentLoaded",bind,{once:true});
 })();
 </script>
+<script>
+// Capture boot errors before the application script loads. Diagnostics is a separate layer,
+// so a diagnostic failure cannot stop the map from initializing, and an app boot error can still be reported.
+window.__sigmaBootErrors=window.__sigmaBootErrors||[];
+window.addEventListener("error",e=>{try{window.__sigmaBootErrors.push({type:"error",message:e.message||"Script error.",filename:e.filename||"",lineno:e.lineno||0,colno:e.colno||0})}catch(_){}},{capture:true});
+window.addEventListener("unhandledrejection",e=>{try{window.__sigmaBootErrors.push({type:"unhandledrejection",message:String(e.reason?.stack||e.reason?.message||e.reason||"Unhandled rejection")})}catch(_){}},{capture:true});
+</script>
 <script src="app.js"></script>
+<script src="diagnostics.js"></script>
 <script>
 // Last-resort settings binder. If another startup routine aborts before the
 // normal startup tail, retry the settings binding without touching map data.
