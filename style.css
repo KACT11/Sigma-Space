@@ -82,3 +82,13 @@ hr{border:0;border-top:1px solid #3d4b55;margin:10px 0}
 .objectMobs{display:flex;flex-wrap:wrap;gap:2px;margin-bottom:7px}
 #mobTypes{display:flex;flex-wrap:wrap;gap:2px;margin-bottom:6px}
 .lifeVariants{display:flex;flex-direction:column;gap:5px}.lifeVariant{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr) 28px;gap:5px;align-items:center}.lifeVariant .lifeAggressive{min-width:0}.lifeRemove{width:28px;height:32px;padding:0;color:#ff9b9b;border-color:#52606b}.lifeAdd{width:100%;margin-top:5px;font-size:12px}.rulerResult{margin-top:7px;padding:6px 7px;border:1px dashed #52606b;background:#17222e;color:#9edbff;font-size:12px;line-height:1.35}.shareActions{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:7px 0}.shareActions button{font-size:12px;padding:6px 7px}.mapPanel.rulerMode canvas{cursor:crosshair}
+
+.settingsActions{margin-top:12px;padding-top:12px;border-top:1px solid #34434e}
+.settingsActions button{width:100%}
+.patchNotesDialog{width:min(760px,94vw)}
+.patchNotesList{display:grid;gap:12px}
+.patchNote{padding:10px 11px;border:1px solid #3c4a54;background:#18232b}
+.patchNote h3{margin:0 0 7px;font-size:14px;color:#dfe8ed}
+.patchNote h3 span{font-size:11px;font-weight:400;color:#8fa0aa;margin-left:5px}
+.patchNote ul{margin:0;padding-left:20px;color:#c7d2d9;font-size:12px}
+.patchNote li+li{margin-top:5px}

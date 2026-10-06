@@ -1,4 +1,6 @@
-const diagnosticRuntimeErrors=Array.isArray(window.__sigmaBootErrors)?window.__sigmaBootErrors:[];
+const diagnosticBootErrors=Array.isArray(window.__sigmaBootErrors)?window.__sigmaBootErrors.map(x=>({...x})):[];
+const diagnosticRuntimeErrors=[];
+for(const x of diagnosticBootErrors)diagnosticRuntimeErrors.push(x);
 function recordDiagnosticError(type,error){try{const message=error?.stack||error?.message||String(error);diagnosticRuntimeErrors.push({type,message:String(message).slice(0,1600),filename:error?.filename||"",lineno:error?.lineno||0,colno:error?.colno||0,time:new Date().toISOString()});if(diagnosticRuntimeErrors.length>30)diagnosticRuntimeErrors.shift()}catch(e){}}
 window.addEventListener("error",e=>recordDiagnosticError("error",e.error||{message:e.message,filename:e.filename,lineno:e.lineno,colno:e.colno}));
 window.addEventListener("unhandledrejection",e=>recordDiagnosticError("unhandledrejection",e.reason));
@@ -13,7 +15,10 @@ function setupDiagnostics(){
   const bodyKinds=new Set(["galaxy","star","cluster","planet","asteroid","moon"]);
 
   const run=async()=>{
+    // Preserve errors captured before diagnostics started; they are often the most useful
+    // evidence when app.js aborted during startup.
     diagnosticRuntimeErrors.length=0;
+    for(const x of diagnosticBootErrors)diagnosticRuntimeErrors.push({...x});
     runBtn.disabled=true;copyBtn.disabled=true;results.innerHTML="";summary.textContent="Проверка выполняется…";tests.length=0;
     try{
       const bootErrors=diagnosticRuntimeErrors.slice(-8);
@@ -31,13 +36,23 @@ function setupDiagnostics(){
       /* 1. Базовая среда и DOM */
       add("DOM интерфейса",!!document.body&&!!$("#map")&&!!$("#settingsModal")&&!!$("#settingsBtn"),"Карта, настройки и основной DOM-контур найдены.");
       add("Canvas",!!canvas&&!!ctx&&canvas.width>0&&canvas.height>0,`Размер: ${canvas?.width||0}×${canvas?.height||0}.`);
+      const canvasRect=canvas?.getBoundingClientRect?.();
+      const canvasGeometryOk=!!canvasRect&&canvasRect.width>0&&canvasRect.height>0&&canvas.width>=Math.max(1,Math.round(canvasRect.width*(window.devicePixelRatio||1)*0.9))&&canvas.height>=Math.max(1,Math.round(canvasRect.height*(window.devicePixelRatio||1)*0.9));
+      add("Canvas: геометрия",canvasGeometryOk,canvasRect?`CSS ${Math.round(canvasRect.width)}×${Math.round(canvasRect.height)}; bitmap ${canvas.width}×${canvas.height}; DPR ${window.devicePixelRatio||1}.`:`Не удалось получить размеры canvas.`);
       add("Canvas 2D API",!!ctx&&typeof ctx.fillRect==="function"&&typeof ctx.clearRect==="function"&&typeof ctx.beginPath==="function","Основные операции Canvas 2D доступны.");
       add("Интерфейсные блоки",["#mapPanel","#details","#bodyTree","#filterResults","#planetTypes","#resourceTypes","#mobTypes","#saveStatus","#dataVersionStatus"].every(s=>!!$(s)),"Карта, карточка, дерево, фильтры, справочники и статусы найдены.");
 
       /* 2. Runtime/state */
       add("Состояние приложения",!!state&&Array.isArray(state.objects)&&Array.isArray(state.planetTypes)&&Array.isArray(state.resourceTypes)&&Array.isArray(state.mobTypes),`Объектов: ${state?.objects?.length??"—"}; planetTypes: ${state?.planetTypes?.length??"—"}; resourceTypes: ${state?.resourceTypes?.length??"—"}; mobTypes: ${state?.mobTypes?.length??"—"}.`);
+      let persistedCount=null,persistedDetail="";
+      try{const raw=localStorage.getItem(DB);if(raw){const parsed=JSON.parse(raw);persistedCount=Array.isArray(parsed?.objects)?parsed.objects.length:null;persistedDetail=persistedCount!==null?`localStorage: ${persistedCount} объектов; state: ${Array.isArray(state?.objects)?state.objects.length:0}.`:`localStorage содержит данные, но формат objects не распознан.`}else persistedDetail="localStorage по ключу карты пуст."}catch(e){persistedDetail=e?.message||String(e)}
+      const currentCount=Array.isArray(state?.objects)?state.objects.length:0;
+      const loadMismatch=persistedCount!==null&&persistedCount>0&&currentCount===0;
+      add("Загрузка сохранённых данных",!loadMismatch,loadMismatch?`${persistedDetail} Похоже, сохранённые тела не были загружены в state.`:persistedDetail||"Сохранённых данных нет или state уже синхронизирован.");
       add("Версия данных",state?.meta?.dataVersion===DATA_VERSION,`Приложение: ${APP_NAME}; dataVersion: ${state?.meta?.dataVersion??"—"}; ожидается v${DATA_VERSION}.`);
       add("Настройки",!!state?.settings&&typeof state.settings==="object",`Ключей настроек: ${state?.settings?Object.keys(state.settings).length:0}.`);
+      add("Язык интерфейса",["ru","en"].includes(state?.settings?.language),`language=${state?.settings?.language||"—"}.`);
+      add("Undo / Redo",typeof undo==="function"&&typeof redo==="function"&&Array.isArray(undoStack)&&Array.isArray(redoStack),`Undo: ${undoStack?.length??"—"}; Redo: ${redoStack?.length??"—"}.`);
 
       /* 3. Data integrity — version-independent structural checks */
       const objects=Array.isArray(state?.objects)?state.objects:[],ids=new Set(),duplicateIds=[],badKinds=[],badCoords=[],badRefs=[],badSizes=[],badResources=[],badLife=[],badFlags=[];
@@ -86,11 +101,11 @@ function setupDiagnostics(){
       add("Справочник мобов",Array.isArray(state.mobTypes)&&state.mobTypes.every(x=>typeof x==="string"&&x.trim())&&mdup.length===0,`Записей: ${state.mobTypes?.length||0}${mdup.length?`; дубли: ${mdup.slice(0,6).join(", ")}`:"."}`);
 
       /* 6. Core modules / function surface */
-      const modules={"Загрузка и миграция":["load","migrateData","normalizeLoadedState"],"Сохранение и backup":["save","snapshotState","openPersistenceDB","queueIndexedSave","scheduleExternalBackup"],"Рендер карты":["render","resize","drawGrid","drawScanZones"],"Навигация и слои":["setLayer","navigateFromList","navigateFromMap","fitCurrentContext"],"Объекты и связи":["addObject","findDuplicate","mergeStarSystem","ensureGalaxies","ensureDeepClusters"],"Фильтры и поиск":["filterMatch","renderFilters"],"Справочники":["refreshTypeLists","refreshCreationFields","bindResourcePicker","bindLifePicker"],"Импорт/экспорт":["exportObjects","importObjects","makeShareCode","decodeShareCode"],"Интерактивность":["hit","updateMouseCoords","copyShareCode"],"Настройки":["ensureSettings","starRadius","scanRadius","privacyMode"]};
+      const modules={"Загрузка и миграция":["load","migrateData","normalizeLoadedState"],"Сохранение и backup":["save","snapshotState","openPersistenceDB","queueIndexedSave","scheduleExternalBackup"],"Рендер карты":["render","resize","drawGrid","drawScanZones"],"Навигация и слои":["setLayer","navigateFromList","navigateFromMap","fitCurrentContext"],"Объекты и связи":["addObject","findDuplicate","mergeStarSystem","ensureGalaxies","ensureDeepClusters"],"Фильтры и поиск":["filterMatch","renderFilters"],"Справочники":["refreshTypeLists","refreshCreationFields","bindResourcePicker","bindLifePicker"],"Импорт/экспорт":["exportObjects","importObjects","makeShareCode","decodeShareCode"],"Интерактивность":["hit","updateMouseCoords","copyShareCode"],"Настройки":["ensureSettings","starRadius","scanRadius","privacyMode","applyLanguage","t"]};
       for(const [name,fns] of Object.entries(modules)){const missing=fns.filter(x=>!fn(x));add(`Модуль: ${name}`,missing.length===0,missing.length?`Отсутствуют функции: ${missing.join(", ")}.`:`Все ${fns.length} ключевых функций доступны.`)}
 
       /* 7. UI bindings */
-      const requiredButtons=["#newBtn","#addCoordsBtn","#clickModeBtn","#fitObjectsBtn","#rulerBtn","#exportBtn","#pasteShareBtn","#backupNowBtn","#backupFolderBtn","#undoBtn","#clearFilters","#addPlanetType","#addResource","#addMob"];
+      const requiredButtons=["#newBtn","#addCoordsBtn","#clickModeBtn","#fitObjectsBtn","#rulerBtn","#exportBtn","#pasteShareBtn","#backupNowBtn","#backupFolderBtn","#undoBtn","#redoBtn","#clearFilters","#addPlanetType","#addResource","#addMob"];
       add("Кнопки и действия",requiredButtons.every(s=>!!$(s)),`Проверено элементов: ${requiredButtons.length}.`);
       const boundChecks=[
         ["Настройки",$("#settingsModal")?.dataset.logicBound==="1"||$("#settingsBtn")?.dataset.settingsFallbackBound==="1"],

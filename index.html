@@ -14,6 +14,7 @@
     <div class="actions">
       <button id="settingsBtn" type="button">Настройки</button>
       <button id="undoBtn" type="button" title="Отменить последнее изменение" disabled>↶ Undo</button>
+      <button id="redoBtn" type="button" title="Вернуть отменённое изменение" disabled>↷ Redo</button>
       <button id="newBtn" type="button">Новая карта</button>
       <button id="exportBtn" type="button">Экспорт</button><button id="pasteShareBtn" type="button">Вставить код</button>
       <label class="fileBtn">Импорт<input id="importInput" type="file" accept=".json,.starmap"></label>
@@ -150,6 +151,8 @@
           <span>Поиск и избранное</span><span id="filtersToggleIcon">−</span>
         </button>
         <div id="filtersBody" class="collapseBody">
+          <label class="hint">Небесное тело</label>
+          <input id="filterBodyName" type="search" placeholder="Название любого тела" autocomplete="off">
           <label class="hint">Галактика</label>
           <input id="filterGalaxyName" type="search" placeholder="Название галактики" autocomplete="off">
           <label class="hint">Тип планеты</label>
@@ -248,6 +251,7 @@
           <label class="hint">Сканы<select id="scanDisplayMode"><option value="none">Не отображать</option><option value="radius">Только радиус</option><option value="center">Радиус + центральная точка</option></select></label>
           <label class="hint">Импортированные данные<select id="importDisplayMode"><option value="show">Отображать</option><option value="hide">Скрыть</option></select></label>
           <label class="hint">Избранное при экспорте<select id="exportFavoritesMode"><option value="show">Передавать избранное</option><option value="hide">Скрыть избранное</option></select></label>
+          <label class="hint">Язык<select id="languageSetting"><option value="ru">Русский</option><option value="en">English</option></select></label>
           <label class="hint settingsWide">Режим публикации / скрытия данных<select id="privacyMode">
             <option value="none">Обычный режим</option>
             <option value="hideStarGalaxy">Скрыть названия и координаты галактик и звёзд</option>
@@ -255,6 +259,7 @@
           </select></label>
         </div>
         <div class="hint privacyDescription">Режим публикации маскирует данные только в интерфейсе. Сама карта и сохранённые данные не изменяются.</div>
+        <div class="settingsActions"><button id="patchNotesBtn" type="button">Патчноуты</button></div>
         <div class="diagnosticCard">
           <div class="diagnosticHeader"><div><b>Диагностика SigmaSpace</b><div class="hint">Проверяет основные узлы приложения без изменения карты и пользовательских данных.</div></div><button id="runDiagnosticsBtn" type="button">Проверить приложение</button></div>
           <div id="diagnosticSummary" class="diagnosticSummary">Проверка ещё не запускалась.</div>
@@ -262,6 +267,12 @@
           <button id="copyDiagnosticsBtn" type="button" class="diagnosticCopy" disabled>Скопировать отчёт</button>
         </div>
       </div>
+    </div>
+  </div>
+  <div id="patchNotesModal" class="settingsModal patchNotesModal" aria-hidden="true">
+    <div class="settingsDialog patchNotesDialog" role="dialog" aria-modal="true" aria-labelledby="patchNotesTitle">
+      <div class="settingsDialogHeader"><h2 id="patchNotesTitle">Патчноуты</h2><button id="patchNotesCloseBtn" type="button" class="settingsClose">×</button></div>
+      <div id="patchNotesList" class="settingsDialogBody patchNotesList"></div>
     </div>
   </div>
   <div id="toast" class="toast"></div>
@@ -287,9 +298,11 @@
 // Capture boot errors before the application script loads. Diagnostics is a separate layer,
 // so a diagnostic failure cannot stop the map from initializing, and an app boot error can still be reported.
 window.__sigmaBootErrors=window.__sigmaBootErrors||[];
-window.addEventListener("error",e=>{try{window.__sigmaBootErrors.push({type:"error",message:e.message||"Script error.",filename:e.filename||"",lineno:e.lineno||0,colno:e.colno||0})}catch(_){}},{capture:true});
+window.addEventListener("error",e=>{try{const file=e.filename||"";if(/(?:^|\/)PATCH_NOTES\.js(?:$|[?#])/.test(file))return;window.__sigmaBootErrors.push({type:"error",message:e.message||"Script error.",filename:file,lineno:e.lineno||0,colno:e.colno||0})}catch(_){}},{capture:true});
 window.addEventListener("unhandledrejection",e=>{try{window.__sigmaBootErrors.push({type:"unhandledrejection",message:String(e.reason?.stack||e.reason?.message||e.reason||"Unhandled rejection")})}catch(_){}},{capture:true});
 </script>
+<script src="PATCH_NOTES.js"></script>
+<script src="locale.js"></script>
 <script src="app.js"></script>
 <script src="diagnostics.js"></script>
 <script>
